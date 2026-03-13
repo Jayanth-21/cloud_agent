@@ -1,0 +1,55 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CostExplorerReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetDimensionValues",
+        "ce:GetTags",
+        "ce:GetCostAndUsage",
+        "ce:GetCostAndUsageComparisons",
+        "ce:GetCostComparisonDrivers",
+        "ce:GetCostForecast"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchMetricsAndAlarmsReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:GetMetricData",
+        "cloudwatch:ListMetrics",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:DescribeAlarmHistory"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchLogsReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:FilterLogEvents",
+        "logs:GetLogEvents",
+        "logs:StartQuery",
+        "logs:GetQueryResults",
+        "logs:StopQuery"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudTrailReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:LookupEvents",
+        "cloudtrail:StartQuery",
+        "cloudtrail:ListEventDataStores",
+        "cloudtrail:DescribeQuery",
+        "cloudtrail:GetQueryResults"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

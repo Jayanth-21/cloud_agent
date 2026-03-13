@@ -1,0 +1,323 @@
+[
+  {
+    "name": "list_available_tools",
+    "description": "List all tools at your disposal. Use when the user asks what tools they have, what they can do, what capabilities are available, or anything matching 'what tools do I have'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "get_today_date",
+    "description": "Get the current date in YYYY-MM-DD and current month in YYYY-MM (UTC). Useful for computing date ranges for cost and usage queries.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "get_dimension_values",
+    "description": "Get available dimension values for Cost Explorer (e.g. SERVICE, REGION, LINKED_ACCOUNT). Dates in YYYY-MM-DD.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "Start date YYYY-MM-DD" },
+        "end_date": { "type": "string", "description": "End date YYYY-MM-DD" },
+        "dimension_key": { "type": "string", "description": "Dimension e.g. SERVICE, REGION, LINKED_ACCOUNT" }
+      },
+      "required": ["start_date", "end_date", "dimension_key"]
+    }
+  },
+  {
+    "name": "get_tag_values",
+    "description": "Get available tag values for a tag key over a billing period. Dates in YYYY-MM-DD.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "Start date YYYY-MM-DD" },
+        "end_date": { "type": "string", "description": "End date YYYY-MM-DD" },
+        "tag_key": { "type": "string", "description": "Tag key name" }
+      },
+      "required": ["start_date", "end_date", "tag_key"]
+    }
+  },
+  {
+    "name": "get_cost_and_usage",
+    "description": "Retrieve AWS cost and usage data. Dates YYYY-MM-DD (end_date inclusive). granularity: DAILY|MONTHLY|HOURLY. group_by: e.g. SERVICE. metric: UnblendedCost, BlendedCost, UsageQuantity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "Start date YYYY-MM-DD" },
+        "end_date": { "type": "string", "description": "End date YYYY-MM-DD inclusive" },
+        "granularity": { "type": "string", "description": "DAILY, MONTHLY, or HOURLY" },
+        "group_by": { "type": "string", "description": "Dimension to group by e.g. SERVICE" },
+        "filter_expression": { "type": "object", "description": "Cost Explorer Filter JSON" },
+        "metric": { "type": "string", "description": "UnblendedCost, BlendedCost, UsageQuantity" }
+      },
+      "required": ["start_date", "end_date"]
+    }
+  },
+  {
+    "name": "get_cost_and_usage_comparisons",
+    "description": "Compare costs between two periods. Use full calendar months.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "base_start_date": { "type": "string", "description": "Base period start YYYY-MM-DD" },
+        "base_end_date": { "type": "string", "description": "Base period end YYYY-MM-DD" },
+        "comparison_start_date": { "type": "string", "description": "Comparison period start YYYY-MM-DD" },
+        "comparison_end_date": { "type": "string", "description": "Comparison period end YYYY-MM-DD" },
+        "granularity": { "type": "string", "description": "MONTHLY or DAILY" },
+        "group_by": { "type": "string", "description": "Dimension e.g. SERVICE" },
+        "filter_expression": { "type": "object", "description": "Optional filter" },
+        "metric": { "type": "string", "description": "UnblendedCost etc" }
+      },
+      "required": ["base_start_date", "base_end_date", "comparison_start_date", "comparison_end_date"]
+    }
+  },
+  {
+    "name": "get_cost_comparison_drivers",
+    "description": "Get top cost change drivers between two periods. Returns up to 10 most significant drivers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "base_start_date": { "type": "string", "description": "Base period start YYYY-MM-DD" },
+        "base_end_date": { "type": "string", "description": "Base period end YYYY-MM-DD" },
+        "comparison_start_date": { "type": "string", "description": "Comparison period start YYYY-MM-DD" },
+        "comparison_end_date": { "type": "string", "description": "Comparison period end YYYY-MM-DD" },
+        "filter_expression": { "type": "object", "description": "Optional filter" },
+        "metric": { "type": "string", "description": "UnblendedCost etc" }
+      },
+      "required": ["base_start_date", "base_end_date", "comparison_start_date", "comparison_end_date"]
+    }
+  },
+  {
+    "name": "get_cost_forecast",
+    "description": "Get cost forecast for a future period. prediction_interval_level: 80 or 95.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "Start date YYYY-MM-DD" },
+        "end_date": { "type": "string", "description": "End date YYYY-MM-DD" },
+        "metric": { "type": "string", "description": "UnblendedCost etc" },
+        "granularity": { "type": "string", "description": "MONTHLY or DAILY" },
+        "filter_expression": { "type": "object", "description": "Optional filter" },
+        "prediction_interval_level": { "type": "integer", "description": "80 or 95" }
+      },
+      "required": ["start_date", "end_date"]
+    }
+  },
+  {
+    "name": "get_metric_data",
+    "description": "Retrieve CloudWatch metric data. dimensions: list of {Name, Value}. start_time/end_time: ISO8601 or Unix timestamp.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "namespace": { "type": "string", "description": "CloudWatch namespace" },
+        "metric_name": { "type": "string", "description": "Metric name" },
+        "start_time": { "type": "string", "description": "Start time ISO8601 or Unix" },
+        "end_time": { "type": "string", "description": "End time ISO8601 or Unix" },
+        "dimensions": { "type": "array", "description": "List of {Name, Value}", "items": { "type": "object" } },
+        "period": { "type": "integer", "description": "Period in seconds" },
+        "statistic": { "type": "string", "description": "Average, Sum, Maximum, Minimum" }
+      },
+      "required": ["namespace", "metric_name", "start_time", "end_time"]
+    }
+  },
+  {
+    "name": "get_metric_metadata",
+    "description": "Retrieve metadata about a CloudWatch metric (list_metrics).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "namespace": { "type": "string", "description": "Namespace" },
+        "metric_name": { "type": "string", "description": "Metric name" },
+        "dimensions": { "type": "array", "items": { "type": "object" } }
+      },
+      "required": ["namespace", "metric_name"]
+    }
+  },
+  {
+    "name": "get_recommended_metric_alarms",
+    "description": "Get recommended alarm configurations for a metric (describe alarms for metric).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "namespace": { "type": "string", "description": "Namespace" },
+        "metric_name": { "type": "string", "description": "Metric name" },
+        "dimensions": { "type": "array", "items": { "type": "object" } }
+      },
+      "required": ["namespace", "metric_name"]
+    }
+  },
+  {
+    "name": "analyze_metric",
+    "description": "Retrieve metric data for analysis (raw data for trend/statistical analysis).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "namespace": { "type": "string", "description": "Namespace" },
+        "metric_name": { "type": "string", "description": "Metric name" },
+        "start_time": { "type": "string", "description": "Start time" },
+        "end_time": { "type": "string", "description": "End time" },
+        "dimensions": { "type": "array", "items": { "type": "object" } },
+        "period": { "type": "integer", "description": "Period seconds" },
+        "statistic": { "type": "string", "description": "Average, Sum, etc" }
+      },
+      "required": ["namespace", "metric_name", "start_time", "end_time"]
+    }
+  },
+  {
+    "name": "get_active_alarms",
+    "description": "Get currently active CloudWatch alarms. state_value: ALARM, OK, INSUFFICIENT_DATA.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "state_value": { "type": "string", "description": "ALARM, OK, INSUFFICIENT_DATA" },
+        "alarm_names": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "get_alarm_history",
+    "description": "Retrieve alarm state change history. start_date/end_date: ISO8601.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "Start date ISO8601" },
+        "end_date": { "type": "string", "description": "End date ISO8601" },
+        "alarm_name": { "type": "string", "description": "Optional alarm name" },
+        "max_records": { "type": "integer", "description": "Max records to return" }
+      },
+      "required": ["start_date", "end_date"]
+    }
+  },
+  {
+    "name": "describe_log_groups",
+    "description": "List CloudWatch log groups. Optional prefix filter.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "log_group_name_prefix": { "type": "string", "description": "Prefix filter" },
+        "limit": { "type": "integer", "description": "Max items" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "analyze_log_group",
+    "description": "Filter and retrieve log events from a log group for analysis. start_time/end_time: Unix ms.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "log_group_name": { "type": "string", "description": "Log group name" },
+        "start_time": { "type": "integer", "description": "Start time Unix ms" },
+        "end_time": { "type": "integer", "description": "End time Unix ms" },
+        "filter_pattern": { "type": "string", "description": "Optional filter pattern" },
+        "limit": { "type": "integer", "description": "Max events" }
+      },
+      "required": ["log_group_name", "start_time", "end_time"]
+    }
+  },
+  {
+    "name": "execute_log_insights_query",
+    "description": "Start a CloudWatch Logs Insights query. Returns query ID; use get_logs_insight_query_results to fetch results. start_time/end_time: Unix seconds.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "log_group_name": { "type": "string", "description": "Log group name" },
+        "query_string": { "type": "string", "description": "Insights query string" },
+        "start_time": { "type": "integer", "description": "Start Unix seconds" },
+        "end_time": { "type": "integer", "description": "End Unix seconds" }
+      },
+      "required": ["log_group_name", "query_string", "start_time", "end_time"]
+    }
+  },
+  {
+    "name": "get_logs_insight_query_results",
+    "description": "Get results of a CloudWatch Logs Insights query by query ID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_id": { "type": "string", "description": "Query ID from execute_log_insights_query" }
+      },
+      "required": ["query_id"]
+    }
+  },
+  {
+    "name": "cancel_logs_insight_query",
+    "description": "Cancel a running CloudWatch Logs Insights query.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_id": { "type": "string", "description": "Query ID to cancel" }
+      },
+      "required": ["query_id"]
+    }
+  },
+  {
+    "name": "lookup_events",
+    "description": "Look up CloudTrail management events (last 90 days). lookup_attributes: list of {AttributeKey, AttributeValue} e.g. EventName, Username, ResourceName.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_time": { "type": "string", "description": "Start time" },
+        "end_time": { "type": "string", "description": "End time" },
+        "lookup_attributes": { "type": "array", "items": { "type": "object" }, "description": "List of {AttributeKey, AttributeValue}" },
+        "max_results": { "type": "integer", "description": "Max results" },
+        "next_token": { "type": "string", "description": "Pagination token" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "lake_query",
+    "description": "Start a CloudTrail Lake SQL query (Trino-compatible). Returns query ID; use get_query_status/get_query_results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_statement": { "type": "string", "description": "Trino-compatible SQL" }
+      },
+      "required": ["query_statement"]
+    }
+  },
+  {
+    "name": "list_event_data_stores",
+    "description": "List CloudTrail Lake event data stores.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "max_results": { "type": "integer", "description": "Max results" },
+        "next_token": { "type": "string", "description": "Pagination token" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "get_query_status",
+    "description": "Get status of a CloudTrail Lake query (QUEUED, RUNNING, FINISHED, FAILED, CANCELLED, TIMED_OUT).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_id": { "type": "string", "description": "Query ID from lake_query" }
+      },
+      "required": ["query_id"]
+    }
+  },
+  {
+    "name": "get_query_results",
+    "description": "Get results of a completed CloudTrail Lake query. Paginate with next_token.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_id": { "type": "string", "description": "Query ID" },
+        "next_token": { "type": "string", "description": "Pagination token" },
+        "max_query_results": { "type": "integer", "description": "Max results per page" }
+      },
+      "required": ["query_id"]
+    }
+  }
+]

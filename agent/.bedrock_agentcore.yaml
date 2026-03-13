@@ -1,0 +1,182 @@
+default_agent: cloudAgent
+agents:
+  cloud_intelligence_agent:
+    name: cloud_intelligence_agent
+    language: python
+    node_version: null
+    entrypoint: src/main.py
+    deployment_type: direct_code_deploy
+    runtime_type: PYTHON_3_12
+    platform: linux/amd64
+    container_runtime: null
+    source_path: src
+    aws:
+      execution_role: null
+      execution_role_auto_create: true
+      account: '642058032951'
+      region: us-west-2
+      ecr_repository: null
+      ecr_auto_create: false
+      s3_path: null
+      s3_auto_create: true
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+      lifecycle_configuration:
+        idle_runtime_session_timeout: null
+        max_lifetime: null
+    bedrock_agentcore:
+      agent_id: null
+      agent_arn: null
+      agent_session_id: null
+    codebuild:
+      project_name: null
+      execution_role: null
+      source_bucket: null
+    memory:
+      mode: NO_MEMORY
+      memory_id: null
+      memory_arn: null
+      memory_name: null
+      event_expiry_days: 30
+      first_invoke_memory_check_done: false
+      was_created_by_toolkit: false
+    identity:
+      credential_providers: []
+      workload: null
+    aws_jwt:
+      enabled: false
+      audiences: []
+      signing_algorithm: ES384
+      issuer_url: null
+      duration_seconds: 300
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
+    api_key_env_var_name: null
+    api_key_credential_provider_name: null
+    is_generated_by_agentcore_create: false
+  src_main:
+    name: src_main
+    language: python
+    node_version: '20'
+    entrypoint: C:/Users/sjaya/OneDrive/Desktop/Jayanth/CloudCostMonitoring/cloud-intelligence-agent/agent/src/main.py
+    deployment_type: container
+    runtime_type: null
+    platform: linux/arm64
+    container_runtime: docker
+    source_path: C:\Users\sjaya\OneDrive\Desktop\Jayanth\CloudCostMonitoring\cloud-intelligence-agent\agent
+    aws:
+      execution_role: null
+      execution_role_auto_create: true
+      account: '642058032951'
+      region: us-east-1
+      ecr_repository: null
+      ecr_auto_create: true
+      s3_path: null
+      s3_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+      lifecycle_configuration:
+        idle_runtime_session_timeout: null
+        max_lifetime: null
+    bedrock_agentcore:
+      agent_id: src_main-MBVj1OA0Bt
+      agent_arn: arn:aws:bedrock-agentcore:us-west-2:642058032951:runtime/src_main-MBVj1OA0Bt
+      agent_session_id: null
+    codebuild:
+      project_name: null
+      execution_role: null
+      source_bucket: null
+    memory:
+      mode: STM_ONLY
+      memory_id: null
+      memory_arn: null
+      memory_name: src_main_memory
+      event_expiry_days: 30
+      first_invoke_memory_check_done: false
+      was_created_by_toolkit: false
+    identity:
+      credential_providers: []
+      workload: null
+    aws_jwt:
+      enabled: false
+      audiences: []
+      signing_algorithm: ES384
+      issuer_url: null
+      duration_seconds: 300
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
+    api_key_env_var_name: null
+    api_key_credential_provider_name: null
+    is_generated_by_agentcore_create: false
+  cloudAgent:
+    name: cloudAgent
+    language: python
+    node_version: '20'
+    entrypoint: C:/Users/sjaya/OneDrive/Desktop/Jayanth/CloudCostMonitoring/cloud-intelligence-agent/agent/src/main.py
+    deployment_type: container
+    runtime_type: null
+    platform: linux/arm64
+    container_runtime: docker
+    source_path: C:\Users\sjaya\OneDrive\Desktop\Jayanth\CloudCostMonitoring\cloud-intelligence-agent\agent
+    aws:
+      execution_role: arn:aws:iam::642058032951:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-ee5d509de0
+      execution_role_auto_create: false
+      account: '642058032951'
+      region: us-east-1
+      ecr_repository: 642058032951.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-cloudagent
+      ecr_auto_create: false
+      s3_path: null
+      s3_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+      lifecycle_configuration:
+        idle_runtime_session_timeout: null
+        max_lifetime: null
+    bedrock_agentcore:
+      agent_id: cloudAgent-izG6NmHpZr
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:642058032951:runtime/cloudAgent-izG6NmHpZr
+      agent_session_id: null
+    codebuild:
+      project_name: bedrock-agentcore-cloudagent-builder
+      execution_role: arn:aws:iam::642058032951:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-ee5d509de0
+      source_bucket: bedrock-agentcore-codebuild-sources-642058032951-us-east-1
+    memory:
+      mode: STM_ONLY
+      memory_id: cloudAgent_mem-mHi3Yi3oK2
+      memory_arn: arn:aws:bedrock-agentcore:us-east-1:642058032951:memory/cloudAgent_mem-mHi3Yi3oK2
+      memory_name: cloudAgent_mem
+      event_expiry_days: 30
+      first_invoke_memory_check_done: true
+      was_created_by_toolkit: true
+    identity:
+      credential_providers: []
+      workload: null
+    aws_jwt:
+      enabled: false
+      audiences: []
+      signing_algorithm: ES384
+      issuer_url: null
+      duration_seconds: 300
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
+    api_key_env_var_name: null
+    api_key_credential_provider_name: null
+    is_generated_by_agentcore_create: false

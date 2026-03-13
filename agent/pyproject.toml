@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-intelligence-agent"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Phase 2 agent layer: LangGraph + AgentCore Gateway + Bedrock + Postgres checkpointer memory"
+readme = "README.md"
+
+dependencies = [
+    "bedrock-agentcore",
+    "boto3",
+    "langchain",
+    "langchain-mcp-adapters",
+    "langchain_aws",
+    "langgraph",
+    "langgraph-checkpoint-postgres",
+    "matplotlib>=3.7",
+    "mcp",
+    "psycopg[binary,pool]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# Run with PYTHONPATH=src from agent/ so imports (graph, scoping, etc.) resolve.

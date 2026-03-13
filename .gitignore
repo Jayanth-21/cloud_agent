@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Env and secrets
+.env
+.env.local
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AgentCore / local (optional: uncomment if you don't want to track)
+# .bedrock_agentcore.yaml
+
+# Node (if any)
+node_modules/
+
+# Logs and temp
+*.log
+.cursor/
+agent-tools/
