@@ -3,13 +3,28 @@
 
 """MCP client for AgentCore Gateway. All tool calls go through the Gateway (no direct AWS APIs)."""
 
+import logging
 import os
 from typing import Optional
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-# Default Gateway MCP URL (used when env GATEWAY_MCP_URL is not set, e.g. after runtime env reset).
+logger = logging.getLogger(__name__)
+
+# Default Gateway MCP URL for this project. Override with GATEWAY_MCP_URL env var if needed.
 DEFAULT_GATEWAY_MCP_URL = "https://cloudagent-gateway-tzoaoe5iwu.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+
+
+def _resolve_gateway_url(gateway_url: Optional[str] = None) -> str:
+    """Resolve Gateway MCP URL: explicit arg > GATEWAY_MCP_URL env (if non-empty) > default."""
+    if gateway_url is not None and (s := (gateway_url or "").strip()):
+        url = s
+    else:
+        env_url = (os.environ.get("GATEWAY_MCP_URL") or "").strip()
+        url = env_url if env_url else DEFAULT_GATEWAY_MCP_URL
+    if not url.endswith("/mcp"):
+        url = url.rstrip("/") + "/mcp"
+    return url
 
 
 def get_streamable_http_mcp_client(
@@ -19,15 +34,10 @@ def get_streamable_http_mcp_client(
     """
     Returns an MCP client pointing at the AgentCore Gateway MCP endpoint.
     All tools/list and tools/call go through the Gateway to Lambda-hosted MCP servers.
+    Uses DEFAULT_GATEWAY_MCP_URL when GATEWAY_MCP_URL is unset or empty.
     """
-    url = gateway_url or os.environ.get("GATEWAY_MCP_URL", "") or DEFAULT_GATEWAY_MCP_URL
-    if not url:
-        raise ValueError(
-            "GATEWAY_MCP_URL must be set (or pass gateway_url) to use the agent. "
-            "Set it to your AgentCore Gateway MCP endpoint (e.g. https://<gateway-id>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp)."
-        )
-    if not url.endswith("/mcp"):
-        url = url.rstrip("/") + "/mcp"
+    url = _resolve_gateway_url(gateway_url)
+    logger.info("gateway url=%s", url)
     headers = {}
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"

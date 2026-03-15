@@ -4,16 +4,32 @@
 """
 Phase 2 Agent: LangGraph (Plan → Tool Selection → Execute → Evaluate → Iterate),
 AgentCore Gateway (all tool calls), Bedrock inference, tool scoping.
-Session memory via LangGraph checkpointer (Postgres); each session_id is a thread_id.
+
+Short-term memory: thread-scoped checkpoints. A single shared checkpointer is used
+so that the same thread_id (session_id) loads prior conversation state within this process.
+See: https://langchain-ai.github.io/langgraph/how-tos/persistence/
 """
 
 import logging
 import os
+import sys
 import uuid
 
 logger = logging.getLogger(__name__)
 
+
+def _configure_runtime_logging() -> None:
+    """Ensure logs go to stdout so CloudWatch captures them in the container."""
+    if os.environ.get("DOCKER_CONTAINER") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        root = logging.getLogger()
+        if not root.handlers:
+            h = logging.StreamHandler(sys.stdout)
+            h.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+            root.addHandler(h)
+            root.setLevel(logging.INFO)
+
 from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from bedrock_agentcore import BedrockAgentCoreApp
 
 from graph.build import build_graph
@@ -23,8 +39,13 @@ from scoping.domains import filter_tools_by_domain, infer_domain_from_message
 from tools.ask_user import get_ask_user_tool
 from tools.visualization import get_visualization_tool
 
+_configure_runtime_logging()
 app = BedrockAgentCoreApp()
 llm = load_model()
+
+# Single checkpointer shared by all requests so thread_id (session_id) can load prior state.
+# Required for multi-turn memory: same process must reuse this instance (Lambda: best-effort per container).
+_checkpointer = InMemorySaver()
 
 
 def _progress_message(prev: dict | None, curr: dict) -> str | None:
@@ -107,11 +128,10 @@ def _extract_last_content(result: dict) -> str:
 async def invoke(payload: dict):
     """
     Payload: { "prompt": "<user input>", "scope": "cost"|"logs"|"audit"|"all" (optional),
-              "session_id" or "sessionId" (optional; used as thread_id for checkpointer memory) }
-    Session memory is persisted via LangGraph checkpointer (Postgres when CHECKPOINT_POSTGRES_URI is set).
-    Each session_id is one conversation thread; same session_id loads prior state from Postgres.
-    Streams progress events (stage) then final { "result", "messages" } as SSE when
-    used via InvokeAgentRuntime; clients get text/event-stream.
+              "session_id" or "sessionId" (optional; used as thread_id for checkpointer) }
+    Uses a shared checkpointer and thread_id for short-term memory; same session_id
+    loads prior conversation in this process. Streams progress then final
+    { "result", "messages", "clarification_needed" } as SSE.
     """
     prompt = payload.get("prompt", "What can you help me with?")
     scope = payload.get("scope") or infer_domain_from_message(prompt)
@@ -122,58 +142,56 @@ async def invoke(payload: dict):
         or str(uuid.uuid4())
     )
 
-    logger.info("invoke payload_keys=%s session_id=%s", list(payload.keys()), session_id)
+    logger.info("invoke start session_id=%s scope=%s prompt_len=%d", session_id, scope, len(prompt or ""))
 
-    mcp_client = get_streamable_http_mcp_client()
-    all_tools = await mcp_client.get_tools()
+    try:
+        mcp_client = get_streamable_http_mcp_client()
+        all_tools = await mcp_client.get_tools()
+    except Exception as e:
+        logger.exception("get_tools failed session_id=%s error=%s", session_id, e)
+        print(f"[AGENT] get_tools failed session_id={session_id} error={e}", flush=True)
+        raise
+    tool_names = [getattr(t, "name", "?") for t in all_tools]
+    logger.info("get_tools ok session_id=%s all_count=%d names=%s", session_id, len(all_tools), tool_names[:20])
+    print(f"[AGENT] get_tools ok all_count={len(all_tools)} scope={scope} names={tool_names[:15]}", flush=True)
     scoped_tools = filter_tools_by_domain(all_tools, scope)
+    scoped_names = [getattr(t, "name", "?") for t in scoped_tools]
+    logger.info("scoped_tools scope=%s count=%d names=%s", scope, len(scoped_tools), scoped_names[:20])
+    print(f"[AGENT] scoped_tools scope={scope} count={len(scoped_tools)} names={scoped_names[:15]}", flush=True)
+    if len(scoped_tools) == 0 and scope == "cost":
+        print("[AGENT] WARNING: no cost tools after scope filter; cost tools may be missing from Gateway", flush=True)
     scoped_tools = [get_ask_user_tool(), get_visualization_tool()] + list(scoped_tools)
 
-    # Input for this turn: new message + scoped_tools; results/iteration reset for new turn (checkpointer merges).
     input_state = {
         "messages": [HumanMessage(content=prompt)],
-        "scoped_tools": scoped_tools,
+        "scoped_tools": [],
         "results": [],
         "iteration": 0,
     }
 
-    # Default local Postgres for session memory; override with CHECKPOINT_POSTGRES_URI in production.
-    _DEFAULT_POSTGRES_URI = "postgresql://postgres:password@localhost:5432/cloud_agent?sslmode=disable"
-    postgres_uri = (os.environ.get("CHECKPOINT_POSTGRES_URI") or _DEFAULT_POSTGRES_URI).strip()
-    if postgres_uri:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        async with AsyncPostgresSaver.from_conn_string(postgres_uri) as checkpointer:
-            await checkpointer.setup()
-            graph = build_graph(llm, max_iterations=10, checkpointer=checkpointer)
-            config = {"configurable": {"thread_id": session_id}}
-            result = None
-            previous_state = None
-            captured_answer = ""
-            async for state in graph.astream(
-                input_state, config=config, stream_mode="values"
-            ):
-                result = state
-                msg = _progress_message(previous_state, state)
-                if msg == "Formatting response...":
-                    captured_answer = _extract_last_content(state)
-                previous_state = state
-                yield {"stage": "progress", "message": msg or "Working..."}
-    else:
-        logger.warning(
-            "CHECKPOINT_POSTGRES_URI not set; running without persistence (single-turn only)"
-        )
-        graph = build_graph(llm, max_iterations=10)
-        result = None
-        previous_state = None
-        captured_answer = ""
-        async for state in graph.astream(input_state, stream_mode="values"):
+    graph = build_graph(
+        llm,
+        max_iterations=10,
+        checkpointer=_checkpointer,
+        scoped_tools=scoped_tools,
+    )
+    config = {"configurable": {"thread_id": session_id}}
+    result = None
+    previous_state = None
+    captured_answer = ""
+    try:
+        async for state in graph.astream(
+            input_state, config=config, stream_mode="values"
+        ):
             result = state
             msg = _progress_message(previous_state, state)
             if msg == "Formatting response...":
                 captured_answer = _extract_last_content(state)
             previous_state = state
             yield {"stage": "progress", "message": msg or "Working..."}
+    except Exception as e:
+        logger.exception("invoke stream failed session_id=%s error=%s", session_id, e)
+        raise
 
     last_content = captured_answer.strip() or _extract_last_content(result or {})
     if not last_content:
@@ -196,6 +214,12 @@ async def invoke(payload: dict):
     clarification_needed = any(
         isinstance(r, dict) and (r.get("name") or "").strip() == "ask_user"
         for r in (result or {}).get("results") or []
+    )
+    logger.info(
+        "invoke done session_id=%s result_len=%d clarification_needed=%s",
+        session_id,
+        len(last_content or ""),
+        clarification_needed,
     )
     yield {"result": last_content, "messages": [], "clarification_needed": clarification_needed}
 

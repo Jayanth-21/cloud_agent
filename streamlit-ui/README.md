@@ -1,19 +1,14 @@
 # Streamlit UI for Cloud Intelligence Agent
 
-Minimal UI: sidebar of chats, main area with messages + input. One API call to your streaming server with `sessionId` (chat id); response is streamed back. No Postgres/Redis/drizzle; add auth when you want it.
-
-Kept in **streamlit-ui** at repo root, separate from chatbot-app.
+Minimal UI: sidebar of chats, main area with messages + input. Calls **AgentCore Runtime directly** (boto3 `invoke_agent_runtime`); no streaming server. Same chat keeps the same session (conversation context in-memory on the runtime); new chat = new session.
 
 ## Setup
 
-1. **Streaming server** (from repo root):
+1. **Deploy the agent** (once): from repo root, `cd agent && agentcore deploy` (or use your agent name). Ensure `.bedrock_agentcore.yaml` exists with `agent_arn` and `default_agent`.
 
-   ```bash
-   python agent/streaming_server.py
-   ```
-   Serves `http://127.0.0.1:8080/invoke` by default.
+2. **AWS credentials**: Configure locally (e.g. `aws configure`) so the Streamlit app can call the runtime.
 
-2. **Streamlit app** (from repo root):
+3. **Run Streamlit from repo root** (so `.bedrock_agentcore.yaml` is found):
 
    ```bash
    cd streamlit-ui
@@ -21,29 +16,10 @@ Kept in **streamlit-ui** at repo root, separate from chatbot-app.
    streamlit run app.py
    ```
 
-3. Optional: set `STREAMING_SERVER_URL` if the server is not at `http://127.0.0.1:8080/invoke`:
-
-   ```bash
-   export STREAMING_SERVER_URL=http://localhost:8080/invoke
-   streamlit run app.py
-   ```
-   Or add to `.streamlit/secrets.toml`: `STREAMING_SERVER_URL = "http://..."`
-
-## If you get "Read timed out"
-
-Use **direct Bedrock** (no streaming server, same path as `invoke_agent.py`):
-
-```bash
-cd streamlit-ui
-pip install -r requirements.txt
-set USE_DIRECT_BEDROCK=1
-streamlit run app.py
-```
-
-Run from the **repo root** or set `AGENT_CONFIG_PATH` to the path of your `.bedrock_agentcore.yaml`. AWS credentials must be available (env or `~/.aws/credentials`).
+   Or from repo root: `cd streamlit-ui && streamlit run app.py`. Optionally set `AGENT_CONFIG_PATH` to the path of `.bedrock_agentcore.yaml` if you run from another directory.
 
 ## Features
 
-- **Sidebar**: "New chat" + list of chats (titles from first message). Stored in session state (lost on refresh); can be replaced with DB later.
-- **Main**: Messages for the selected chat + chat input. Sends prompt with `sessionId` = current chat id so the agent keeps conversation context.
-- **Streaming**: Progress messages then the final answer. With `USE_DIRECT_BEDROCK=1`, the app calls Bedrock directly (no HTTP timeout).
+- **Sidebar**: "New chat" + list of chats (titles from first message). Stored in session state (lost on refresh).
+- **Main**: Messages for the selected chat + chat input. Sends prompt with `session_id` = current chat id so the runtime keeps conversation context for that chat.
+- **Streaming**: Progress then final answer from the runtime.

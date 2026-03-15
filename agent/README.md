@@ -1,10 +1,10 @@
 # Cloud Intelligence Agent (Phase 2)
 
-Agent layer for the Cloud Intelligence project: LangGraph orchestration, AgentCore Gateway (all tool calls), Bedrock inference, tool scoping. Session memory is handled by LangGraph checkpointer (Postgres), not AgentCore Memory.
+Agent layer for the Cloud Intelligence project: LangGraph orchestration, AgentCore Gateway (all tool calls), Bedrock inference, tool scoping. Session memory is handled by LangGraph in-memory checkpointer (InMemorySaver), not AgentCore Memory.
 
 ## Layout
 
-- **src/main.py** – Entrypoint (BedrockAgentCoreApp); builds graph, loads Gateway tools, scopes by domain, invokes with optional Postgres checkpointer.
+- **src/main.py** – Entrypoint (BedrockAgentCoreApp); builds graph, loads Gateway tools, scopes by domain, invokes with in-memory checkpointer.
 - **src/graph/** – LangGraph state, nodes (planner, tool_selection, execute, evaluate, loop_controller, generate_response), build.
 - **src/scoping/** – Cost / Logs / Audit domains; `filter_tools_by_domain()`, `infer_domain_from_message()`.
 - **src/mcp_client/** – MCP client to AgentCore Gateway URL (no direct AWS APIs).
@@ -12,11 +12,23 @@ Agent layer for the Cloud Intelligence project: LangGraph orchestration, AgentCo
 
 ## Run
 
-Set **GATEWAY_MCP_URL** to your AgentCore Gateway MCP endpoint (e.g. `https://<gateway-id>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp`).
+**GATEWAY_MCP_URL** is optional; it defaults to the project's Gateway MCP endpoint. Set it only to override (e.g. a different gateway or region).
 
-For **multi-turn conversation memory**, the agent uses **CHECKPOINT_POSTGRES_URI** if set; otherwise it defaults to `postgresql://postgres:password@localhost:5432/cloud_agent?sslmode=disable` (local Postgres DB `cloud_agent`). Override the env var for production or different credentials.
+**Multi-turn conversation memory** is provided by LangGraph’s in-memory checkpointer (InMemorySaver). Session state lives in the runtime process only; use the same **session_id** (or **sessionId**) in the payload to keep context for a conversation.
 
-From project root:
+### Run the chat UI (Streamlit)
+
+Streamlit calls the AgentCore Runtime directly (no streaming server). From **repo root**, with AWS credentials configured (e.g. `aws configure`):
+
+```bash
+cd streamlit-ui
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Ensure `.bedrock_agentcore.yaml` is at repo root (or set `AGENT_CONFIG_PATH`). Same chat = same session; new chat = new session (in-memory on the runtime).
+
+### Run agent entrypoint directly
 
 ```bash
 cd agent
@@ -26,15 +38,14 @@ PYTHONPATH=src python src/main.py
 
 Or deploy to AgentCore Runtime using `.bedrock_agentcore.yaml` (point entrypoint and source_path to this agent).
 
-## Session memory (Postgres checkpointer)
+## Session memory (in-memory checkpointer)
 
-- By default the agent uses `postgresql://postgres:password@localhost:5432/cloud_agent?sslmode=disable`. Set **CHECKPOINT_POSTGRES_URI** to override (e.g. different host, user, or DB).
-- Use a **local Postgres** instance with a database named `cloud_agent` (or create one), or point the URI to your own DB.
-- On first use the checkpointer calls `setup()` and creates the required tables (checkpoints, checkpoint_blobs, etc.).
-- Each **session_id** (or **sessionId**) in the payload is used as the LangGraph **thread_id**; the same ID loads/saves conversation state for that session. New session = new ID = separate conversation.
+- The agent uses a **single shared** LangGraph **InMemorySaver** so that the same **session_id** loads prior conversation state (multi-turn memory).
+- Each **session_id** (or **sessionId**) in the payload is used as the LangGraph **thread_id**; the same ID keeps conversation context for that session. New session = new ID = separate conversation.
+- Memory is process-scoped: it works when the same runtime process serves both turns (e.g. long-lived container). On Lambda, session memory is best-effort when the same container is reused; for durable cross-invocation memory, use a persistent checkpointer (e.g. DynamoDB).
 
 ## Payload
 
 - **prompt** (required): User message.
 - **scope** (optional): `"cost"` | `"logs"` | `"audit"` | `"all"`. Inferred from prompt if omitted.
-- **session_id** or **sessionId** (optional): Conversation thread; same ID keeps multi-turn context (when CHECKPOINT_POSTGRES_URI is set).
+- **session_id** or **sessionId** (optional): Conversation thread; same ID keeps multi-turn context (in-memory on the runtime).

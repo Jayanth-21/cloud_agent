@@ -1,25 +1,25 @@
 """
 Minimal Streamlit frontend for the Cloud Intelligence Agent.
 - Sidebar: list of chats (stored in session state; add DB later if you want).
-- Main: messages + input. One API route that calls the streaming server with sessionId and streams back.
+- Main: messages + input. Calls AgentCore Runtime directly (no streaming server).
 - Renders markdown and inline base64 images (e.g. from the visualization tool).
+Run from repo root so .bedrock_agentcore.yaml is found; AWS credentials (e.g. aws configure) required.
 """
 import base64
 import io
+import logging
 import re
+import sys
 import uuid
 
 import streamlit as st
 
 from streamlit_client import invoke_stream
 
-# Config: URL of your streaming server (e.g. python agent/streaming_server.py)
-import os
-try:
-    STREAMING_URL = st.secrets.get("STREAMING_SERVER_URL")
-except Exception:
-    STREAMING_URL = None
-STREAMING_URL = STREAMING_URL or os.environ.get("STREAMING_SERVER_URL", "http://127.0.0.1:8080/invoke")
+logger = logging.getLogger(__name__)
+# So logs appear in the terminal when running streamlit run app.py
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s", stream=sys.stderr)
 
 # Session state: chats = { "chat_id": { "title": str, "messages": [ {"role": "user"|"assistant", "content": str}, ... ] } }
 if "chats" not in st.session_state:
@@ -119,13 +119,14 @@ if prompt := st.chat_input("Ask about cost, logs, or audit..."):
         full = []
         clarification_needed = False
         try:
-            for chunk in invoke_stream(prompt, session_id=chat_id, url=STREAMING_URL):
+            for chunk in invoke_stream(prompt, session_id=chat_id):
                 if isinstance(chunk, dict):
                     clarification_needed = chunk.get("clarification_needed", False)
                     continue
                 full.append(chunk)
             # Full response is saved below and rendered on rerun via render_message_content.
         except Exception as e:
+            logger.exception("invoke_stream failed session_id=%s prompt_len=%d", chat_id, len(prompt or ""))
             placeholder.error(str(e))
             full = [str(e)]
         content = "".join(full)

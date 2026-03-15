@@ -24,19 +24,22 @@ def build_graph(
     llm: BaseChatModel,
     max_iterations: int = 10,
     checkpointer: Optional[Any] = None,
+    scoped_tools: Optional[list] = None,
 ) -> CompiledStateGraph[AgentState]:
     """
-    Build the agent graph. Scoped tools are passed in state at invoke time (scoped_tools).
-    If checkpointer is provided (e.g. Postgres), state is persisted by thread_id for multi-turn.
+    Build the agent graph. Scoped tools are passed via closure (not config) so the
+    checkpointer does not serialize them. If checkpointer is provided, state is
+    persisted by thread_id for multi-turn.
     """
+    tools_list = list(scoped_tools) if scoped_tools else []
     builder = StateGraph(AgentState)
 
     builder.add_node("planner", create_planner_node(llm))
-    builder.add_node("tool_selection", create_tool_selection_node(llm))
-    builder.add_node("execute", create_execute_node())
+    builder.add_node("tool_selection", create_tool_selection_node(llm, tools_list))
+    builder.add_node("execute", create_execute_node(tools_list))
     builder.add_node("evaluate", create_evaluate_node(llm))
     builder.add_node("loop_controller", create_loop_controller_node(max_iterations))
-    builder.add_node("generate_response", create_generate_response_node(llm))
+    builder.add_node("generate_response", create_generate_response_node(llm, tools_list))
 
     builder.add_edge("__start__", "planner")
     builder.add_edge("planner", "tool_selection")

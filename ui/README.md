@@ -26,7 +26,7 @@ This folder contains **modifications** to the [Vercel Chatbot](https://github.co
    - Wire the chat UI to use the `/api/agentcore` route when using the Cloud Intelligence Agent (see Integration below).
 
 3. **Environment variables** (e.g. `.env.local`):
-   - `AGENTCORE_RUNTIME_INVOKE_URL` – HTTP URL of your AgentCore Runtime invoke endpoint. For **streaming**, use a backend that returns `text/event-stream` (e.g. the repo’s streaming server; see below).
+   - `AGENTCORE_RUNTIME_INVOKE_URL` – HTTP URL of your AgentCore Runtime invoke endpoint (e.g. a Lambda or API Gateway that calls `InvokeAgentRuntime` and returns `text/event-stream` for streaming).
    - Optional: `AGENTCORE_AUTH_HEADER` (e.g. `Bearer <token>`) if your runtime requires it.
 
 4. **Streaming and session (optional)**  
@@ -35,11 +35,7 @@ This folder contains **modifications** to the [Vercel Chatbot](https://github.co
 
 5. **Install and run** the chatbot as usual (e.g. `pnpm install`, `pnpm dev`). Use the Cloud Intelligence Agent option to talk to your agent; responses and JSON will be shown in the chat and via the JSON/viz component.
 
-**Streaming backend (this repo):** To get streaming without a custom Lambda, run the agent’s HTTP server from the repo root (where `.bedrock_agentcore.yaml` lives):
-   ```bash
-   python agent/streaming_server.py
-   ```
-   Then set `AGENTCORE_RUNTIME_INVOKE_URL=http://localhost:8080/invoke` (or `http://<host>:8080/invoke`). The server calls `InvokeAgentRuntime` and streams the response as SSE when the runtime returns `text/event-stream`.
+**Note:** This repo’s Streamlit UI talks to the runtime directly (no HTTP proxy). For the Vercel Chatbot you need an HTTP endpoint; use Lambda, API Gateway, or your own proxy that calls `InvokeAgentRuntime` and streams the response.
 
 ---
 
