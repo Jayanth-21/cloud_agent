@@ -26,3 +26,4 @@ class AgentState(TypedDict, total=False):
     results: Annotated[list[dict], _results_reducer]  # Accumulate within run; reset when input passes []
     evaluation: str
     iteration: int
+    chart_markdown: str  # set by prepare_viz (table + optional PNG markdown)

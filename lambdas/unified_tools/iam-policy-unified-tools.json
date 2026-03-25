@@ -50,6 +50,35 @@
         "cloudtrail:GetQueryResults"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "LambdaReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:ListFunctions",
+        "lambda:GetFunction"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECSReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:DescribeClusters",
+        "ecs:DescribeServices"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ConfigReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "config:ListDiscoveredResources",
+        "config:DescribeConfigurationRecorders"
+      ],
+      "Resource": "*"
     }
   ]
 }

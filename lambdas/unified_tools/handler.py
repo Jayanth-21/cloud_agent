@@ -7,6 +7,7 @@ Exposes Cost Explorer, CloudWatch, and CloudTrail tools via a single Lambda targ
 Gateway passes event = tool input (inputSchema properties) and context with bedrockAgentCoreToolName = targetId___toolName.
 """
 
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,9 @@ ce = boto3.client("ce")
 cloudwatch = boto3.client("cloudwatch")
 logs = boto3.client("logs")
 cloudtrail = boto3.client("cloudtrail")
+lambda_client = boto3.client("lambda")
+ecs_client = boto3.client("ecs")
+config_client = boto3.client("config")
 
 DELIMITER = "___"
 
@@ -40,17 +44,177 @@ def _today_date() -> Dict[str, str]:
     return {"today_date_UTC": now_utc.strftime("%Y-%m-%d"), "current_month": now_utc.strftime("%Y-%m")}
 
 
-def _normalize_group_by(group_by: Any) -> Dict[str, str]:
+def _normalize_group_by(group_by: Any) -> Optional[Dict[str, str]]:
+    """
+    None => omit GroupBy (account totals per period; matches Cost Explorer with no dimension).
+    SERVICE, REGION, etc. => group by that dimension.
+    """
     if group_by is None:
-        return {"Type": "DIMENSION", "Key": "SERVICE"}
+        return None
     if isinstance(group_by, str):
-        return {"Type": "DIMENSION", "Key": group_by}
+        g = group_by.strip()
+        if not g or g.upper() in ("NONE", "N/A", "TOTAL", "NULL"):
+            return None
+        return {"Type": "DIMENSION", "Key": g}
     return {"Type": group_by.get("Type", "DIMENSION"), "Key": group_by.get("Key", "SERVICE")}
+
+
+def _merge_groups_by_keys(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Combine duplicate Keys (same dimension value) by summing metric Amounts."""
+    key_order: List[tuple] = []
+    merged: Dict[tuple, Dict[str, Any]] = {}
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        keys_t = tuple(g.get("Keys") or [])
+        metrics = g.get("Metrics") or {}
+        if keys_t not in merged:
+            key_order.append(keys_t)
+            merged[keys_t] = {"Keys": list(keys_t), "Metrics": {}}
+            for mk, mv in metrics.items():
+                if isinstance(mv, dict):
+                    merged[keys_t]["Metrics"][mk] = dict(mv)
+                else:
+                    merged[keys_t]["Metrics"][mk] = mv
+            continue
+        dest_m = merged[keys_t]["Metrics"]
+        for mk, mv in metrics.items():
+            if isinstance(mv, dict) and "Amount" in mv:
+                try:
+                    add = float(mv.get("Amount") or 0)
+                except (TypeError, ValueError):
+                    add = 0.0
+                if mk not in dest_m:
+                    dest_m[mk] = dict(mv)
+                else:
+                    dm = dest_m[mk]
+                    if isinstance(dm, dict) and "Amount" in dm:
+                        try:
+                            base = float(dm.get("Amount") or 0)
+                        except (TypeError, ValueError):
+                            base = 0.0
+                        dm["Amount"] = str(base + add)
+            elif mk not in dest_m:
+                dest_m[mk] = mv if isinstance(mv, dict) else mv
+    return [merged[k] for k in key_order]
+
+
+def _sum_total_blocks(t1: Dict[str, Any], t2: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(t1)
+    for mk, mv in t2.items():
+        if isinstance(mv, dict) and "Amount" in mv:
+            try:
+                a = float((out.get(mk) or {}).get("Amount") or 0) + float(mv.get("Amount") or 0)
+            except (TypeError, ValueError):
+                a = float(mv.get("Amount") or 0)
+            out[mk] = {**mv, "Amount": str(a)}
+        elif mk not in out:
+            out[mk] = mv
+    return out
+
+
+def _merge_cost_explorer_results_by_time(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Cost Explorer pagination can return multiple ResultsByTime rows for the same
+    TimePeriod.Start with different Groups. Merge into one row per period.
+    """
+    order: List[str] = []
+    by_start: Dict[str, Dict[str, Any]] = {}
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        tp = row.get("TimePeriod") or {}
+        start = tp.get("Start") or ""
+        if not start:
+            continue
+        groups = row.get("Groups") or []
+        total = row.get("Total")
+        if start not in by_start:
+            order.append(start)
+            by_start[start] = {
+                "TimePeriod": {"Start": tp.get("Start"), "End": tp.get("End")},
+                "Groups": list(groups) if groups else [],
+            }
+            if total:
+                by_start[start]["Total"] = dict(total) if isinstance(total, dict) else total
+        else:
+            by_start[start]["Groups"].extend(list(groups))
+            if total and isinstance(total, dict):
+                prev = by_start[start].get("Total")
+                if isinstance(prev, dict):
+                    by_start[start]["Total"] = _sum_total_blocks(prev, total)
+                else:
+                    by_start[start]["Total"] = dict(total)
+    out: List[Dict[str, Any]] = []
+    for start in order:
+        block = by_start[start]
+        gr = block.get("Groups") or []
+        if gr:
+            block["Groups"] = _merge_groups_by_keys(gr)
+        out.append(block)
+    return out
 
 
 def _adjust_end_date_inclusive(end_date: str) -> str:
     dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
     return dt.strftime("%Y-%m-%d")
+
+
+def _aggregate_services_for_date_range(
+    start_date: str,
+    end_date_exclusive: str,
+    metric: str,
+    filter_expression: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    One MONTHLY-bucketed CE query over the range, GroupBy SERVICE, full pagination + merge.
+    Service amounts are scoped to the requested TimePeriod (incl. partial months).
+    Sum(by_service) = authoritative period total for narratives vs DAILY+SERVICE under-count.
+    """
+    params: Dict[str, Any] = {
+        "TimePeriod": {"Start": start_date, "End": end_date_exclusive},
+        "Granularity": "MONTHLY",
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+        "Metrics": [metric],
+    }
+    if filter_expression:
+        params["Filter"] = filter_expression
+    all_rows: List[Dict[str, Any]] = []
+    next_token = None
+    while True:
+        p = dict(params)
+        if next_token:
+            p["NextPageToken"] = next_token
+        resp = ce.get_cost_and_usage(**p)
+        all_rows.extend(resp.get("ResultsByTime", []))
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
+    merged = _merge_cost_explorer_results_by_time(all_rows) if all_rows else []
+    by_service: Dict[str, float] = defaultdict(float)
+    for row in merged:
+        for g in row.get("Groups") or []:
+            if not isinstance(g, dict):
+                continue
+            keys = g.get("Keys") or []
+            svc = str(keys[0]) if keys else "Unknown"
+            for mv in (g.get("Metrics") or {}).values():
+                if isinstance(mv, dict) and "Amount" in mv:
+                    try:
+                        by_service[svc] += float(mv.get("Amount") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    break
+    total = sum(by_service.values())
+    ranked = sorted(by_service.items(), key=lambda x: -x[1])
+    return {
+        "period_total_usd": round(total, 2),
+        "by_service": [{"service": a, "amount_usd": round(b, 4)} for a, b in ranked[:50]],
+        "_usage": (
+            "Use period_total_usd as the overall cost for start_date through end_date (inclusive). "
+            "Use by_service for top cost drivers. Do not infer total from DAILY+SERVICE rows alone."
+        ),
+    }
 
 
 # ---------- Cost Explorer ----------
@@ -89,16 +253,17 @@ def get_cost_and_usage(
     metric: str = "UnblendedCost",
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Retrieve AWS cost and usage data. Dates YYYY-MM-DD (end_date inclusive). granularity: DAILY|MONTHLY|HOURLY. group_by: e.g. SERVICE. metric: UnblendedCost, BlendedCost, UsageQuantity."""
+    """Retrieve AWS cost and usage. Always includes _period_service_totals (MONTHLY+SERVICE rollup) for period_total_usd and by_service. Omit group_by for CE-style daily/monthly totals in ResultsByTime."""
     try:
         end_adj = _adjust_end_date_inclusive(end_date)
         gb = _normalize_group_by(group_by)
-        params = {
+        params: Dict[str, Any] = {
             "TimePeriod": {"Start": start_date, "End": end_adj},
             "Granularity": granularity.upper(),
-            "GroupBy": [{"Type": gb["Type"], "Key": gb["Key"]}],
             "Metrics": [metric],
         }
+        if gb is not None:
+            params["GroupBy"] = [{"Type": gb["Type"], "Key": gb["Key"]}]
         if filter_expression:
             params["Filter"] = filter_expression
         result = {"ResultsByTime": [], "NextPageToken": None}
@@ -111,6 +276,28 @@ def get_cost_and_usage(
             next_token = response.get("NextPageToken")
             if not next_token:
                 break
+        if gb is not None and result["ResultsByTime"]:
+            result["ResultsByTime"] = _merge_cost_explorer_results_by_time(result["ResultsByTime"])
+        try:
+            result["_period_service_totals"] = _aggregate_services_for_date_range(
+                start_date, end_adj, metric, filter_expression
+            )
+        except Exception as agg_err:
+            result["_period_service_totals_error"] = str(agg_err)
+        if granularity.upper() == "DAILY" and gb is None and result.get("ResultsByTime"):
+            ds = 0.0
+            for row in result["ResultsByTime"]:
+                if not isinstance(row, dict):
+                    continue
+                tot = row.get("Total") or {}
+                for mv in tot.values() if isinstance(tot, dict) else []:
+                    if isinstance(mv, dict) and "Amount" in mv:
+                        try:
+                            ds += float(mv.get("Amount") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                        break
+            result["_daily_totals_sum_usd"] = round(ds, 2)
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -129,7 +316,7 @@ def get_cost_and_usage_comparisons(
 ) -> Dict[str, Any]:
     """Compare costs between two periods. Use full calendar months."""
     try:
-        gb = _normalize_group_by(group_by)
+        gb = _normalize_group_by(group_by) or {"Type": "DIMENSION", "Key": "SERVICE"}
         params = {
             "Granularity": granularity.upper(),
             "GroupBy": [{"Type": gb["Type"], "Key": gb["Key"]}],
@@ -322,6 +509,32 @@ def describe_log_groups(
         return {"error": str(e)}
 
 
+def describe_log_group(
+    log_group_name: str,
+    include_streams: bool = True,
+    streams_limit: int = 20,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Describe a single CloudWatch log group (details + optional recent log streams). Use to get ARN, stored bytes, stream count, and stream list."""
+    try:
+        out = logs.describe_log_groups(logGroupNamePrefix=log_group_name, limit=1)
+        groups = out.get("logGroups", [])
+        if not groups or groups[0].get("logGroupName") != log_group_name:
+            return {"error": f"Log group not found: {log_group_name}"}
+        result = {**groups[0], "logGroupName": groups[0]["logGroupName"]}
+        if include_streams:
+            streams = logs.describe_log_streams(
+                logGroupName=log_group_name,
+                orderBy="LastEventTime",
+                descending=True,
+                limit=streams_limit,
+            )
+            result["logStreams"] = streams.get("logStreams", [])
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def analyze_log_group(
     log_group_name: str,
     start_time: int,
@@ -373,6 +586,111 @@ def cancel_logs_insight_query(query_id: str, **kwargs: Any) -> Dict[str, Any]:
     try:
         logs.stop_query(queryId=query_id)
         return {"status": "cancelled", "queryId": query_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------- Lambda (discovery) ----------
+def list_lambda_functions(
+    function_version: str = "ALL",
+    max_items: int = 50,
+    name_prefix: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """List Lambda functions in the account. Optional name_prefix to filter by function name prefix."""
+    try:
+        params = {"MaxItems": max_items, "FunctionVersion": function_version}
+        response = lambda_client.list_functions(**params)
+        funcs = response.get("Functions", [])
+        if name_prefix:
+            prefix_lower = name_prefix.lower()
+            funcs = [f for f in funcs if (f.get("FunctionName") or "").lower().startswith(prefix_lower)]
+        return {"Functions": funcs[:max_items], "Count": len(funcs)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def describe_lambda_function(function_name: str, **kwargs: Any) -> Dict[str, Any]:
+    """Get details of a Lambda function (config, runtime, env, last modified, etc.)."""
+    try:
+        return lambda_client.get_function(FunctionName=function_name)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------- ECS (discovery) ----------
+def list_ecs_clusters(max_results: int = 100, **kwargs: Any) -> Dict[str, Any]:
+    """List ECS clusters in the account."""
+    try:
+        response = ecs_client.list_clusters(maxResults=max_results)
+        cluster_arns = response.get("clusterArns", [])
+        if not cluster_arns:
+            return {"clusters": [], "clusterArns": []}
+        desc = ecs_client.describe_clusters(clusters=cluster_arns)
+        return {"clusters": desc.get("clusters", []), "clusterArns": cluster_arns}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def list_ecs_services(
+    cluster: str,
+    max_results: int = 100,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """List ECS services in a cluster. cluster: cluster name or ARN."""
+    try:
+        response = ecs_client.list_services(cluster=cluster, maxResults=max_results)
+        service_arns = response.get("serviceArns", [])
+        if not service_arns:
+            return {"services": [], "serviceArns": []}
+        desc = ecs_client.describe_services(cluster=cluster, services=service_arns)
+        return {"services": desc.get("services", []), "serviceArns": service_arns}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def describe_ecs_service(
+    cluster: str,
+    services: List[str],
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Describe one or more ECS services. services: list of service names or ARNs."""
+    try:
+        if isinstance(services, str):
+            services = [services]
+        return ecs_client.describe_services(cluster=cluster, services=services)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------- AWS Config (discovery) ----------
+def list_discovered_resources(
+    resource_type: str,
+    resource_name: Optional[str] = None,
+    limit: int = 100,
+    next_token: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """List discovered resources by type (AWS Config). resource_type: e.g. AWS::EC2::Instance, AWS::Lambda::Function, AWS::ECS::Cluster. Use to see what resources exist in the account."""
+    try:
+        params = {"resourceType": resource_type, "limit": limit}
+        if resource_name:
+            params["resourceName"] = resource_name
+        if next_token:
+            params["nextToken"] = next_token
+        response = config_client.list_discovered_resources(**params)
+        return {
+            "resourceIdentifiers": response.get("resourceIdentifiers", []),
+            "nextToken": response.get("nextToken"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def describe_configuration_recorders(**kwargs: Any) -> Dict[str, Any]:
+    """Describe AWS Config configuration recorders (whether Config is recording and for which resource types). Use to see if Config is enabled and what it records."""
+    try:
+        return config_client.describe_configuration_recorders()
     except Exception as e:
         return {"error": str(e)}
 
@@ -467,10 +785,18 @@ AVAILABLE_TOOLS_DESCRIPTIONS = [
     {"name": "get_active_alarms", "description": "Get active CloudWatch alarms (ALARM, OK, INSUFFICIENT_DATA)."},
     {"name": "get_alarm_history", "description": "Get CloudWatch alarm state change history."},
     {"name": "describe_log_groups", "description": "List CloudWatch log groups."},
+    {"name": "describe_log_group", "description": "Describe a single log group (details and recent streams)."},
     {"name": "analyze_log_group", "description": "Filter and retrieve log events from a log group."},
     {"name": "execute_log_insights_query", "description": "Start a CloudWatch Logs Insights query."},
     {"name": "get_logs_insight_query_results", "description": "Get results of a Logs Insights query by query ID."},
     {"name": "cancel_logs_insight_query", "description": "Cancel a running Logs Insights query."},
+    {"name": "list_lambda_functions", "description": "List Lambda functions in the account."},
+    {"name": "describe_lambda_function", "description": "Get details of a Lambda function."},
+    {"name": "list_ecs_clusters", "description": "List ECS clusters in the account."},
+    {"name": "list_ecs_services", "description": "List ECS services in a cluster."},
+    {"name": "describe_ecs_service", "description": "Describe ECS service(s) in a cluster."},
+    {"name": "list_discovered_resources", "description": "List AWS Config discovered resources by type (e.g. AWS::Lambda::Function, AWS::ECS::Cluster)."},
+    {"name": "describe_configuration_recorders", "description": "Describe AWS Config configuration recorders (whether Config is recording)."},
     {"name": "lookup_events", "description": "Look up CloudTrail management events (last 90 days)."},
     {"name": "lake_query", "description": "Start a CloudTrail Lake SQL query (Trino)."},
     {"name": "list_event_data_stores", "description": "List CloudTrail Lake event data stores."},
@@ -483,7 +809,7 @@ def list_available_tools(**kwargs: Any) -> Dict[str, Any]:
     """Return the list of all tools available at your disposal. Use when the user asks what tools they have, what they can do, or what capabilities are available."""
     return {
         "tools": AVAILABLE_TOOLS_DESCRIPTIONS,
-        "summary": f"You have {len(AVAILABLE_TOOLS_DESCRIPTIONS)} tools: 1 meta tool (list_available_tools), 7 Cost Explorer, 11 CloudWatch, and 5 CloudTrail tools. Use list_available_tools to get this list, or ask for cost, metrics, logs, or audit data.",
+        "summary": f"You have {len(AVAILABLE_TOOLS_DESCRIPTIONS)} tools: 1 meta, 7 Cost Explorer, 11 CloudWatch (logs/metrics), 8 discovery (Lambda/ECS/Config + describe_log_group), 5 CloudTrail. Use list_available_tools to get this list, or ask for cost, metrics, logs, audit, or discovery.",
     }
 
 
@@ -504,10 +830,18 @@ TOOL_HANDLERS = {
     "get_active_alarms": get_active_alarms,
     "get_alarm_history": get_alarm_history,
     "describe_log_groups": describe_log_groups,
+    "describe_log_group": describe_log_group,
     "analyze_log_group": analyze_log_group,
     "execute_log_insights_query": execute_log_insights_query,
     "get_logs_insight_query_results": get_logs_insight_query_results,
     "cancel_logs_insight_query": cancel_logs_insight_query,
+    "list_lambda_functions": list_lambda_functions,
+    "describe_lambda_function": describe_lambda_function,
+    "list_ecs_clusters": list_ecs_clusters,
+    "list_ecs_services": list_ecs_services,
+    "describe_ecs_service": describe_ecs_service,
+    "list_discovered_resources": list_discovered_resources,
+    "describe_configuration_recorders": describe_configuration_recorders,
     "lookup_events": lookup_events,
     "lake_query": lake_query,
     "list_event_data_stores": list_event_data_stores,
@@ -524,10 +858,23 @@ def lambda_handler(event: dict, context: Any) -> dict:
     handler = TOOL_HANDLERS.get(tool_name)
     if not handler:
         return {"error": f"Unknown tool: {tool_name}"}
+    # Event is the map of inputSchema properties; pass as kwargs (strip internal keys)
+    kwargs = {k: v for k, v in event.items() if not k.startswith("__") and k != "bedrockAgentCoreToolName"}
+    # Log tool name and key cost args for debugging (CloudWatch)
+    print(f"[LAMBDA] tool={tool_name} kwargs_keys={list(kwargs.keys())}", flush=True)
+    if tool_name == "get_cost_and_usage":
+        print(
+            f"[LAMBDA] get_cost_and_usage start_date={kwargs.get('start_date')} end_date={kwargs.get('end_date')} granularity={kwargs.get('granularity')} group_by={kwargs.get('group_by')}",
+            flush=True,
+        )
+    elif tool_name == "get_cost_forecast":
+        print(
+            f"[LAMBDA] get_cost_forecast start_date={kwargs.get('start_date')} end_date={kwargs.get('end_date')}",
+            flush=True,
+        )
     try:
-        # Event is the map of inputSchema properties; pass as kwargs (strip internal keys)
-        kwargs = {k: v for k, v in event.items() if not k.startswith("__") and k != "bedrockAgentCoreToolName"}
         result = handler(**kwargs)
         return result if isinstance(result, dict) else {"result": result}
     except Exception as e:
+        print(f"[LAMBDA] error tool={tool_name} error={e}", flush=True)
         return {"error": str(e)}

@@ -37,7 +37,11 @@ from mcp_client.client import get_streamable_http_mcp_client
 from model.load import load_model
 from scoping.domains import filter_tools_by_domain, infer_domain_from_message
 from tools.ask_user import get_ask_user_tool
-from tools.visualization import get_visualization_tool
+from tools.visualization import (
+    build_auto_viz_from_conversation,
+    build_auto_viz_from_results,
+    get_visualization_tool,
+)
 
 _configure_runtime_logging()
 app = BedrockAgentCoreApp()
@@ -127,7 +131,7 @@ def _extract_last_content(result: dict) -> str:
 @app.entrypoint
 async def invoke(payload: dict):
     """
-    Payload: { "prompt": "<user input>", "scope": "cost"|"logs"|"audit"|"all" (optional),
+    Payload: { "prompt": "<user input>", "scope": "cost"|"logs"|"audit"|"discovery"|"all" (optional),
               "session_id" or "sessionId" (optional; used as thread_id for checkpointer) }
     Uses a shared checkpointer and thread_id for short-term memory; same session_id
     loads prior conversation in this process. Streams progress then final
@@ -171,7 +175,7 @@ async def invoke(payload: dict):
 
     graph = build_graph(
         llm,
-        max_iterations=10,
+        max_iterations=20,
         checkpointer=_checkpointer,
         scoped_tools=scoped_tools,
     )
@@ -193,7 +197,9 @@ async def invoke(payload: dict):
         logger.exception("invoke stream failed session_id=%s error=%s", session_id, e)
         raise
 
-    last_content = captured_answer.strip() or _extract_last_content(result or {})
+    last_content = (_extract_last_content(result or {}) or "").strip()
+    if not last_content:
+        last_content = captured_answer.strip()
     if not last_content:
         results = (result or {}).get("results") or []
         if results:
@@ -211,15 +217,37 @@ async def invoke(payload: dict):
             "No response generated. The agent completed but returned no text. "
             "You may want to retry or check model/credentials."
         )
+    # Charts must reach the client: append from results or ToolMessages if missing (state.results can be empty after merge).
+    if last_content and "data:image/png;base64" not in last_content:
+        try:
+            viz_md = build_auto_viz_from_results(
+                (result or {}).get("results") or [], user_query=prompt
+            )
+            if not viz_md:
+                viz_md = build_auto_viz_from_conversation(
+                    (result or {}).get("messages") or [], user_query=prompt
+                )
+            if viz_md:
+                last_content = f"{last_content.rstrip()}\n\n{viz_md}"
+                logger.info("invoke: appended chart markdown chars=%d", len(viz_md))
+        except Exception:
+            logger.exception("invoke: chart append failed")
+
     clarification_needed = any(
         isinstance(r, dict) and (r.get("name") or "").strip() == "ask_user"
         for r in (result or {}).get("results") or []
     )
+    has_chart = "data:image/png;base64" in (last_content or "")
     logger.info(
-        "invoke done session_id=%s result_len=%d clarification_needed=%s",
+        "invoke done session_id=%s result_len=%d clarification_needed=%s has_png_chart=%s",
         session_id,
         len(last_content or ""),
         clarification_needed,
+        has_chart,
+    )
+    print(
+        f"[AGENT] invoke done result_len={len(last_content or '')} has_png_chart={has_chart}",
+        flush=True,
     )
     yield {"result": last_content, "messages": [], "clarification_needed": clarification_needed}
 

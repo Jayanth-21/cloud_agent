@@ -77,24 +77,32 @@ def render_message_content(content: str) -> None:
     """Render assistant message: markdown and inline base64 images (e.g. ![Chart](data:image/png;base64,...))."""
     if not content:
         return
-    # Match markdown image; allow optional whitespace in base64 (wrapped lines)
+    # Non-greedy base64 until closing ); URL-escaped ) won't appear in standard base64
     pattern = re.compile(
-        r"!\[([^\]]*)\]\(data:image/([^;]+);base64,([A-Za-z0-9+/=\s]+)\)",
+        r"!\[([^\]]*)\]\(\s*data:image/([^;)]+);base64,\s*([A-Za-z0-9+/=\s]+?)\s*\)",
         re.DOTALL,
     )
     last_end = 0
     for m in pattern.finditer(content):
         if m.start() > last_end:
-            st.markdown(content[last_end : m.start()], unsafe_allow_html=False)
+            st.markdown(content[last_end : m.start()])
         b64_raw = m.group(3).replace("\n", "").replace(" ", "").replace("\r", "")
         try:
             img_bytes = base64.b64decode(b64_raw, validate=True)
             st.image(io.BytesIO(img_bytes), caption=m.group(1) or "Chart", use_container_width=True)
-        except Exception:
-            st.caption("Chart image could not be displayed (data may be truncated or invalid).")
+        except Exception as ex:
+            logger.warning(
+                "chart decode failed len_b64=%d err=%s",
+                len(b64_raw),
+                ex,
+            )
+            st.caption(
+                "Chart could not be displayed (truncated response or invalid image data). "
+                f"Base64 length: {len(b64_raw)}."
+            )
         last_end = m.end()
     if last_end < len(content):
-        st.markdown(content[last_end:], unsafe_allow_html=False)
+        st.markdown(content[last_end:])
 
 
 st.title("Cloud Intelligence Agent")
@@ -124,12 +132,17 @@ if prompt := st.chat_input("Ask about cost, logs, or audit..."):
                     clarification_needed = chunk.get("clarification_needed", False)
                     continue
                 full.append(chunk)
+            content = "".join(full)
+            logger.info(
+                "assistant reply len=%d has_png=%s",
+                len(content),
+                "data:image/png;base64" in content,
+            )
             # Full response is saved below and rendered on rerun via render_message_content.
         except Exception as e:
             logger.exception("invoke_stream failed session_id=%s prompt_len=%d", chat_id, len(prompt or ""))
             placeholder.error(str(e))
-            full = [str(e)]
-        content = "".join(full)
+            content = str(e)
         messages.append({
             "role": "assistant",
             "content": content,

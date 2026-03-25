@@ -107,35 +107,61 @@ def invoke_stream_direct(
     stream_body = response.get("response")
 
     if "text/event-stream" in content_type and stream_body:
-        for line in stream_body.iter_lines(chunk_size=1024):
+        # AgentCore may emit many SSE lines; duplicate or growing "result" payloads
+        # must NOT be concatenated (breaks markdown and base64 charts). Keep last full result.
+        last_result = ""
+        clarification_needed = False
+        n_lines = 0
+        n_progress = 0
+        for line in stream_body.iter_lines(chunk_size=65536):
             if not line:
                 continue
             line_str = line.decode("utf-8")
             if line_str.startswith("data:"):
                 line_str = line_str[5:].strip()
-            if not line_str:
+            if not line_str or line_str == "[DONE]":
                 continue
+            n_lines += 1
             try:
                 obj = json.loads(line_str)
-                if isinstance(obj, dict):
-                    if obj.get("stage") == "progress":
-                        continue
-                    chunk = (
-                        obj.get("result")
-                        or obj.get("content")
-                        or obj.get("text")
-                        or obj.get("delta")
-                        or obj.get("output")
-                        or obj.get("answer")
-                        or ""
-                    )
-                    if isinstance(chunk, str) and chunk:
-                        yield chunk
-                    if obj.get("clarification_needed"):
-                        yield {"clarification_needed": True}
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("stage") == "progress":
+                    n_progress += 1
+                    continue
+                if obj.get("clarification_needed"):
+                    clarification_needed = True
+                r = obj.get("result")
+                if isinstance(r, str) and r.strip():
+                    t = r.strip()
+                    if len(t) >= len(last_result):
+                        last_result = t
+                    continue
+                for key in ("content", "text", "output", "answer"):
+                    v = obj.get(key)
+                    if isinstance(v, str) and v.strip():
+                        t = v.strip()
+                        if len(t) >= len(last_result):
+                            last_result = t
+                        break
+                d = obj.get("delta")
+                if isinstance(d, str) and d and not last_result:
+                    last_result += d
             except json.JSONDecodeError:
-                yield line_str
-        logger.info("invoke_stream_direct done session_id=%s (stream)", session_id)
+                logger.debug("non-json sse line: %s", line_str[:120])
+        has_chart = "data:image/png;base64" in last_result
+        logger.info(
+            "invoke_stream_direct done session_id=%s sse_lines=%d progress=%d final_len=%d has_png=%s",
+            session_id,
+            n_lines,
+            n_progress,
+            len(last_result),
+            has_chart,
+        )
+        if last_result:
+            yield last_result
+        if clarification_needed:
+            yield {"clarification_needed": True}
         return
 
     parts = []

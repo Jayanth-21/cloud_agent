@@ -45,14 +45,14 @@
   },
   {
     "name": "get_cost_and_usage",
-    "description": "Retrieve AWS cost and usage data. Dates YYYY-MM-DD (end_date inclusive). granularity: DAILY|MONTHLY|HOURLY. group_by: e.g. SERVICE. metric: UnblendedCost, BlendedCost, UsageQuantity.",
+    "description": "Retrieve AWS cost and usage data. Response includes _period_service_totals.period_total_usd and by_service for the full date range (authoritative). Use omit group_by + DAILY for daily totals in ResultsByTime. Do not use DAILY+SERVICE rows alone for period total. granularity: DAILY|MONTHLY|HOURLY.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "start_date": { "type": "string", "description": "Start date YYYY-MM-DD" },
         "end_date": { "type": "string", "description": "End date YYYY-MM-DD inclusive" },
         "granularity": { "type": "string", "description": "DAILY, MONTHLY, or HOURLY" },
-        "group_by": { "type": "string", "description": "Dimension to group by e.g. SERVICE" },
+        "group_by": { "type": "string", "description": "Omit or NONE for totals per day/month. SERVICE, REGION, LINKED_ACCOUNT, etc. for breakdown." },
         "filter_expression": { "type": "object", "description": "Cost Explorer Filter JSON" },
         "metric": { "type": "string", "description": "UnblendedCost, BlendedCost, UsageQuantity" }
       },
@@ -253,9 +253,171 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "query_id": { "type": "string", "description": "Query ID to cancel" }
+        "query_id": {
+          "type": "string",
+          "description": "Query ID to cancel"
+        }
       },
-      "required": ["query_id"]
+      "required": [
+        "query_id"
+      ]
+    }
+  },
+  {
+    "name": "describe_log_group",
+    "description": "Describe a single CloudWatch log group (details and recent log streams). Use to get ARN, stored bytes, stream count, and stream list.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "include_streams": {
+          "type": "boolean",
+          "description": "Include recent log streams (default true)"
+        },
+        "log_group_name": {
+          "type": "string",
+          "description": "Full log group name"
+        },
+        "streams_limit": {
+          "type": "integer",
+          "description": "Max streams to return (default 20)"
+        }
+      },
+      "required": [
+        "log_group_name"
+      ]
+    }
+  },
+  {
+    "name": "list_lambda_functions",
+    "description": "List Lambda functions in the account. Optional name_prefix to filter by function name prefix.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "function_version": {
+          "type": "string",
+          "description": "ALL or active"
+        },
+        "max_items": {
+          "type": "integer",
+          "description": "Max functions to return (default 50)"
+        },
+        "name_prefix": {
+          "type": "string",
+          "description": "Filter by function name prefix"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "describe_lambda_function",
+    "description": "Get details of a Lambda function (config, runtime, env, last modified).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "function_name": {
+          "type": "string",
+          "description": "Function name or ARN"
+        }
+      },
+      "required": [
+        "function_name"
+      ]
+    }
+  },
+  {
+    "name": "list_ecs_clusters",
+    "description": "List ECS clusters in the account.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "max_results": {
+          "type": "integer",
+          "description": "Max clusters (default 100)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "list_ecs_services",
+    "description": "List ECS services in a cluster. cluster: cluster name or ARN.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "description": "Cluster name or ARN"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max services (default 100)"
+        }
+      },
+      "required": [
+        "cluster"
+      ]
+    }
+  },
+  {
+    "name": "describe_ecs_service",
+    "description": "Describe one or more ECS services in a cluster. services: list of service names or ARNs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "description": "Cluster name or ARN"
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Service names or ARNs"
+        }
+      },
+      "required": [
+        "cluster",
+        "services"
+      ]
+    }
+  },
+  {
+    "name": "list_discovered_resources",
+    "description": "List AWS Config discovered resources by type. resource_type: e.g. AWS::Lambda::Function, AWS::ECS::Cluster, AWS::EC2::Instance. Use to see what resources exist in the account.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "description": "Max results (default 100)"
+        },
+        "next_token": {
+          "type": "string",
+          "description": "Pagination token"
+        },
+        "resource_name": {
+          "type": "string",
+          "description": "Optional filter by resource name"
+        },
+        "resource_type": {
+          "type": "string",
+          "description": "AWS resource type e.g. AWS::Lambda::Function, AWS::ECS::Cluster"
+        }
+      },
+      "required": [
+        "resource_type"
+      ]
+    }
+  },
+  {
+    "name": "describe_configuration_recorders",
+    "description": "Describe AWS Config configuration recorders (whether Config is recording and for which resource types).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
     }
   },
   {

@@ -11,8 +11,28 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from graph.state import AgentState
+from tools.tool_output_unwrap import unwrap_tool_output
+from tools.visualization import build_auto_viz_from_results
 
 logger = logging.getLogger(__name__)
+
+
+def _last_human_query(messages: list) -> str:
+    for m in reversed(messages or []):
+        typ = getattr(m, "type", None)
+        if isinstance(m, dict):
+            typ = m.get("type") or m.get("type_")
+        if typ != "human":
+            continue
+        c = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        if isinstance(c, str):
+            return c.strip()
+        if isinstance(c, list):
+            return "".join(
+                str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in c
+            ).strip()
+        return str(c or "").strip()
+    return ""
 
 
 def _get_scoped_tools(state: AgentState, config: Any = None) -> list:
@@ -75,16 +95,14 @@ TOOL_SELECTION_PROMPT = """Given the conversation and plan below, select which t
 Output a JSON object with one key "tool_calls" containing a list of objects, each with "name" (tool name) and "arguments" (dict of argument names to values).
 Use the exact "name" from the Available tools list below (e.g. unified-aws-tools___get_cost_and_usage). If no tool is needed, output {{"tool_calls": []}}.
 
-When the user specifies a time range (e.g. "last 7 days", "this month", "last 30 days"), call get_cost_and_usage (or get_today_date first if you need today for relative dates). Use the exact tool name from the list (e.g. unified-aws-tools___get_cost_and_usage) with appropriate time_period or start/end dates.
+When the user specifies a time range (e.g. "last 7 days", "this month", "last 30 days"), call get_cost_and_usage (or get_today_date first if you need today for relative dates). Use the exact tool name from the list (e.g. unified-aws-tools___get_cost_and_usage) with appropriate start_date and end_date and granularity=DAILY for day-by-day totals.
+- For overall cost, daily totals, or time-series charts: do NOT pass group_by (or pass group_by NONE) so ResultsByTime has daily Total per day (matches Cost Explorer). The response also includes _period_service_totals with period_total_usd and by_service—use those for the overall dollar total and top cost drivers; do not sum or infer totals from per-day Groups.
+- For bar/pie by region or non-SERVICE dimension only: pass group_by REGION (etc.). Prefer one get_cost_and_usage call without group_by for line chart; _period_service_totals already lists services.
 
 When to use the ask_user tool:
 - Only when the user query is vague or missing required details (e.g. "what are my costs?" with no date range). When the user already said "last 7 days" or "this month", do NOT call ask_user; call get_cost_and_usage (or get_today_date then get_cost_and_usage) instead.
 
-When to use the visualize_data tool:
-- When you have time-series data (e.g. cost over time, forecast), call visualize_data with chart_type="line" and include_table=True.
-- When you have categorical breakdown (e.g. cost by service, by region), call visualize_data with chart_type="bar" or chart_type="pie" and include_table=True.
-- For cost or forecast queries, prefer returning both table and chart: set include_table=True. Pass the data from get_cost_and_usage or get_cost_forecast as the "data" argument (JSON string).
-- Set value_label and category_label so the chart and table show clear units and dimensions: use value_label="Cost (USD)" for cost/forecast data (so axes show $); use value_label="Number of requests" (or similar) for request/count data; use category_label="Region", "Service", "Date", or "Day" as appropriate for what the categories represent.
+Do NOT call visualize_data for get_cost_and_usage, get_cost_forecast, get_metric_data, analyze_metric, analyze_log_group, or get_logs_insight_query_results—the runtime adds charts and tables under your answer automatically. Only use visualize_data for ad-hoc small JSON the user provided inline (rare).
 
 Available tools (name and description):
 {tool_descriptions}
@@ -99,6 +117,8 @@ Output only the JSON object, no markdown:"""
 FINAL_RESPONSE_PROMPT = """Based on the conversation and tool results below, write a clear, concise final answer to the user. Do not call tools. Output only the answer.
 
 Write a brief narrative summary of the cost/forecast findings (key numbers, insights, top drivers). Do NOT paste the visualize_data tool output or any base64 image in your text—the table and chart will be appended automatically so the user gets both your summary and the visualization.
+
+Cost answers: If get_cost_and_usage JSON includes _period_service_totals, you MUST state overall spend as _period_service_totals.period_total_usd (and cite top drivers from _period_service_totals.by_service). Use ResultsByTime daily Total only for per-day highs/trends. Never use sums of partial service rows as the period total.
 
 Conversation and results:
 {messages}
@@ -116,7 +136,7 @@ Output exactly one word: DONE, CONTINUE, or RETRY.
 - CONTINUE: More steps are needed; the agent will plan again (e.g. to add a table/chart).
 - RETRY: The last step failed or was insufficient; the agent will try again with a different approach.
 
-Important: If the LATEST tool result is from get_cost_and_usage or get_cost_forecast (or similar cost/forecast tools), and the tool "visualize_data" has NOT been run yet (check "Tools run so far" below), return CONTINUE so the agent can add a table and chart. Do not discard the cost/forecast information—it will be kept; the next step only adds visualization.
+If get_cost_and_usage, get_cost_forecast, get_metric_data, analyze_log_group, or get_logs_insight_query_results returned valid JSON (no error), return DONE—the answer text is enough; visualization is appended automatically. Otherwise use CONTINUE or RETRY as needed.
 
 Tools run so far (by name): {tools_run_so_far}
 
@@ -240,6 +260,12 @@ def create_tool_selection_node(llm: Any, scoped_tools: list) -> Any:
         selected_names = [s["name"] for s in selected]
         logger.info("tool_selection selected count=%d names=%s", len(selected), selected_names)
         print(f"[AGENT] tool_selection selected count={len(selected)} names={selected_names}", flush=True)
+        for s in selected:
+            args = s.get("arguments") or {}
+            cost_keys = {k: args.get(k) for k in ("start_date", "end_date", "granularity", "group_by", "time_period") if k in args}
+            if cost_keys:
+                logger.info("tool_selection %s arguments: %s", s.get("name"), cost_keys)
+                print(f"[AGENT] tool_selection {s.get('name')} arguments: {cost_keys}", flush=True)
         return {"selected_tools": selected}
 
     return tool_selection
@@ -255,12 +281,18 @@ def create_execute_node(scoped_tools: list) -> Any:
         logger.info("execute: running %d tool(s) %s", len(selected), tool_names)
         print(f"[AGENT] execute: running {len(selected)} tool(s) {tool_names}", flush=True)
         if len(selected) == 0:
-            print("[AGENT] execute: no tools selected; Lambda will not be invoked", flush=True)
+            print("[AGENT] execute: no tools selected; preserving prior results", flush=True)
+            return {}
         results = []
         tool_messages = []
         for i, spec in enumerate(selected):
             name = spec.get("name", "")
             args = spec.get("arguments", {})
+            # Log tool args for debugging (cost queries: dates, granularity, group_by)
+            args_preview = {k: v for k, v in (args or {}).items() if k in ("start_date", "end_date", "granularity", "group_by", "time_period")}
+            if args_preview:
+                logger.info("execute: %s args=%s", name, args_preview)
+                print(f"[AGENT] execute: {name} args={args_preview}", flush=True)
             t = _resolve_tool_by_name(name, tools)
             if not t:
                 logger.warning("execute: %s -> Tool not found (not in scoped_tools)", name)
@@ -271,7 +303,7 @@ def create_execute_node(scoped_tools: list) -> Any:
                 continue
             try:
                 out = await t.ainvoke(args)
-                content = out if isinstance(out, str) else str(out)
+                content = unwrap_tool_output(out)
                 results.append({"name": name, "output": content})
                 tool_messages.append(
                     ToolMessage(content=content, tool_call_id=f"call_{i}")
@@ -317,6 +349,25 @@ def create_evaluate_node(llm: Any) -> Any:
     return evaluate
 
 
+def create_prepare_viz_node(llm: Any) -> Any:
+    """Normalize → transform → render chart markdown before final narrative."""
+
+    def prepare_viz(state: AgentState, config: Any = None) -> dict:
+        from viz_pipeline.pipeline import run_visualization_pipeline
+
+        messages = state.get("messages") or []
+        results = state.get("results") or []
+        q = _last_human_query(messages)
+        try:
+            md = run_visualization_pipeline(llm, results, messages, q)
+        except Exception:
+            logger.exception("prepare_viz: pipeline failed")
+            md = ""
+        return {"chart_markdown": (md or "").strip()}
+
+    return prepare_viz
+
+
 def create_generate_response_node(llm: Any, scoped_tools: list) -> Any:
     """Produces final assistant message when evaluation is done. Tools from closure (not config)."""
 
@@ -347,17 +398,37 @@ def create_generate_response_node(llm: Any, scoped_tools: list) -> Any:
                     content = out
                     from_ask_user = True
                 break
-        # Append visualize_data output so user gets narrative + table + chart (skip when replying with clarification)
+        # Narrative + chart from deterministic pipeline (prepare_viz), or legacy visualize_data / fallback
         if not from_ask_user:
-            for r in results:
-                if not isinstance(r, dict):
-                    continue
-                name = (r.get("name") or "").strip()
-                if name.endswith("visualize_data") or name == "visualize_data":
-                    out = r.get("output", "")
-                    if out and "error" not in r:
-                        content = (content + "\n\n" + out).strip()
-                    break
+            chart_md = (state.get("chart_markdown") or "").strip()
+            if chart_md:
+                content = (content + "\n\n" + chart_md).strip()
+                logger.info("generate_response: appended chart_markdown chars=%d", len(chart_md))
+            viz_appended = bool(chart_md)
+            if not viz_appended:
+                for r in results:
+                    if not isinstance(r, dict):
+                        continue
+                    name = (r.get("name") or "").strip()
+                    if name.endswith("visualize_data") or name == "visualize_data":
+                        out = r.get("output", "")
+                        if out and "error" not in r:
+                            content = (content + "\n\n" + out).strip()
+                            viz_appended = True
+                        break
+            if not viz_appended:
+                try:
+                    auto_viz = build_auto_viz_from_results(
+                        results, user_query=_last_human_query(messages)
+                    )
+                    if auto_viz:
+                        content = (content + "\n\n" + auto_viz).strip()
+                        logger.info(
+                            "generate_response: appended legacy auto_viz chars=%d",
+                            len(auto_viz),
+                        )
+                except Exception as ex:
+                    logger.exception("generate_response: auto_viz failed: %s", ex)
         if not content and results:
             parts = []
             for r in results:
@@ -379,7 +450,7 @@ def create_generate_response_node(llm: Any, scoped_tools: list) -> Any:
     return generate_response
 
 
-def create_loop_controller_node(max_iterations: int = 10) -> Any:
+def create_loop_controller_node(max_iterations: int = 20) -> Any:
     """Returns a loop_controller node. Routing is done by the conditional edge; node must return a state dict."""
 
     def loop_controller(state: AgentState) -> dict:
