@@ -1,1 +1,1 @@
-# Tool scoping by domain (Cost, Logs, Audit)
+# Legacy package: domain-based tool filtering was removed in favor of agent/skills/.

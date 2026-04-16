@@ -33,4 +33,4 @@ Use the JSON array in **`../gateway_inline_schema.json`** (repo path `lambdas/ga
 
 ## Agent
 
-The agent’s `agent/src/scoping/domains.py` maps tool names to domains (cost, logs, audit, discovery, all). Discovery tools are used when the user asks about log groups, Lambdas, ECS, or AWS Config. Point `GATEWAY_MCP_URL` at your Gateway and the agent will receive tools from this single target (with optional `targetId___toolName` prefix; the agent strips it).
+The agent’s **`agent/skills/`** packages declare **tool allowlists** and playbooks; semantic routing (Bedrock embeddings + cosine similarity) picks skills per user message. When nothing matches, all Gateway tools are exposed. Point `GATEWAY_MCP_URL` at your Gateway and the agent will receive tools from this single target (with optional `targetId___toolName` prefix; the agent strips it).

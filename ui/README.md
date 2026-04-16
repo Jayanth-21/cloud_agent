@@ -1,58 +1,71 @@
-# Phase 5: Custom UI (Vercel Chatbot + AgentCore Runtime)
+<a href="https://chat.vercel.ai/">
+  <img alt="Chatbot" src="app/(chat)/opengraph-image.png">
+  <h1 align="center">Chatbot</h1>
+</a>
 
-This folder contains **modifications** to the [Vercel Chatbot](https://github.com/vercel/chatbot) template so the UI:
+<p align="center">
+    Chatbot (formerly AI Chatbot) is a free, open-source template built with Next.js and the AI SDK that helps you quickly build powerful chatbot applications.
+</p>
 
-- Sends prompts to the **AgentCore Runtime** endpoint (your Phase 2 agent).
-- Supports **streaming** responses when the runtime returns a stream.
-- Displays **structured JSON** results (e.g. tool outputs, agent response).
-- Supports **visualization schemas** for rendering charts/tables when the agent returns them.
+<p align="center">
+  <a href="https://chatbot.dev"><strong>Read Docs</strong></a> ·
+  <a href="#features"><strong>Features</strong></a> ·
+  <a href="#model-providers"><strong>Model Providers</strong></a> ·
+  <a href="#deploy-your-own"><strong>Deploy Your Own</strong></a> ·
+  <a href="#running-locally"><strong>Running locally</strong></a>
+</p>
+<br/>
 
-**No backend (Lambda/agent) refactor**—only UI and a Next.js API route that proxies to AgentCore Runtime.
+## Features
 
----
+- [Next.js](https://nextjs.org) App Router
+  - Advanced routing for seamless navigation and performance
+  - React Server Components (RSCs) and Server Actions for server-side rendering and increased performance
+- [AI SDK](https://ai-sdk.dev/docs/introduction)
+  - Unified API for generating text, structured objects, and tool calls with LLMs
+  - Hooks for building dynamic chat and generative user interfaces
+  - Supports OpenAI, Anthropic, Google, xAI, and other model providers via AI Gateway
+- [shadcn/ui](https://ui.shadcn.com)
+  - Styling with [Tailwind CSS](https://tailwindcss.com)
+  - Component primitives from [Radix UI](https://radix-ui.com) for accessibility and flexibility
+- Data Persistence
+  - [Neon Serverless Postgres](https://vercel.com/marketplace/neon) for saving chat history and user data
+  - [Vercel Blob](https://vercel.com/storage/blob) for efficient file storage
+- [Auth.js](https://authjs.dev)
+  - Simple and secure authentication
 
-## Setup
+## Model Providers
 
-1. **Clone the Vercel Chatbot** repo:
-   ```bash
-   git clone https://github.com/vercel/chatbot.git chatbot-app
-   cd chatbot-app
-   ```
+This template uses the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) to access multiple AI models through a unified interface. Models are configured in `lib/ai/models.ts` with per-model provider routing. Included models: Mistral, Moonshot, DeepSeek, OpenAI, and xAI.
 
-2. **Copy this folder’s files** into the cloned app:
-   - `app/api/agentcore/route.ts` → `chatbot-app/app/api/agentcore/route.ts`
-   - `components/agent-json-result.tsx` → `chatbot-app/components/agent-json-result.tsx`
-   - `lib/agentcore-client.ts` → `chatbot-app/lib/agentcore-client.ts`
-   - Wire the chat UI to use the `/api/agentcore` route when using the Cloud Intelligence Agent (see Integration below).
+### AI Gateway Authentication
 
-3. **Environment variables** (e.g. `.env.local`):
-   - `AGENTCORE_RUNTIME_INVOKE_URL` – HTTP URL of your AgentCore Runtime invoke endpoint (e.g. a Lambda or API Gateway that calls `InvokeAgentRuntime` and returns `text/event-stream` for streaming).
-   - Optional: `AGENTCORE_AUTH_HEADER` (e.g. `Bearer <token>`) if your runtime requires it.
+**For Vercel deployments**: Authentication is handled automatically via OIDC tokens.
 
-4. **Streaming and session (optional)**  
-   - Send `stream: true` in the body to request a stream; the route forwards `Accept: text/event-stream` and streams the response when the backend returns SSE.  
-   - Send `sessionId` (or `session_id`) to keep conversation context: use the same ID for a conversation so the runtime’s `runtimeSessionId` (and memory) is preserved.
+**For non-Vercel deployments**: You need to provide an AI Gateway API key by setting the `AI_GATEWAY_API_KEY` environment variable in your `.env.local` file.
 
-5. **Install and run** the chatbot as usual (e.g. `pnpm install`, `pnpm dev`). Use the Cloud Intelligence Agent option to talk to your agent; responses and JSON will be shown in the chat and via the JSON/viz component.
+With the [AI SDK](https://ai-sdk.dev/docs/introduction), you can also switch to direct LLM providers like [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), [Cohere](https://cohere.com/), and [many more](https://ai-sdk.dev/providers/ai-sdk-providers) with just a few lines of code.
 
-**Note:** This repo’s Streamlit UI talks to the runtime directly (no HTTP proxy). For the Vercel Chatbot you need an HTTP endpoint; use Lambda, API Gateway, or your own proxy that calls `InvokeAgentRuntime` and streams the response.
+## Deploy Your Own
 
----
+You can deploy your own version of Chatbot to Vercel with one click:
 
-## Integration
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/templates/next.js/chatbot)
 
-- **Chat input** → POST to your Next.js route (e.g. `/api/agentcore`) with `{ prompt, sessionId?, scope?, stream? }`.
-- The **route** forwards to `AGENTCORE_RUNTIME_INVOKE_URL` with the same payload (or the format your runtime expects). If the runtime returns a stream, the route streams it back.
-- **Display**: Use the existing message list for assistant text; use `AgentJsonResult` for messages that contain structured JSON or a visualization schema (e.g. `{ type: "json", data: {...} }` or `{ type: "visualization", schema: "...", data: {...} }`).
+## Running locally
 
----
+You will need to use the environment variables [defined in `.env.example`](.env.example) to run Chatbot. It's recommended you use [Vercel Environment Variables](https://vercel.com/docs/projects/environment-variables) for this, but a `.env` file is all that is necessary.
 
-## Files in this folder
+> Note: You should not commit your `.env` file or it will expose secrets that will allow others to control access to your various AI and authentication provider accounts.
 
-| File | Purpose |
-|------|--------|
-| `app/api/agentcore/route.ts` | Next.js API route: receives prompt/session, calls AgentCore Runtime, returns or streams response. |
-| `components/agent-json-result.tsx` | Renders structured JSON and optional visualization schema (e.g. table/chart). |
-| `lib/agentcore-client.ts` | Client helper to call `/api/agentcore` from the chat UI (optional). |
+1. Install Vercel CLI: `npm i -g vercel`
+2. Link local instance with Vercel and GitHub accounts (creates `.vercel` directory): `vercel link`
+3. Download your environment variables: `vercel env pull`
 
-Adapt the chat page and model selector so that when “Cloud Intelligence Agent” (or your label) is selected, the app uses `/api/agentcore` and displays tool/result JSON with `AgentJsonResult` where appropriate.
+```bash
+pnpm install
+pnpm db:migrate # Setup database or apply latest database changes
+pnpm dev
+```
+
+Your app template should now be running on [localhost:3000](http://localhost:3000).

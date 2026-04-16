@@ -1,51 +1,60 @@
 # Cloud Intelligence Agent (Phase 2)
 
-Agent layer for the Cloud Intelligence project: LangGraph orchestration, AgentCore Gateway (all tool calls), Bedrock inference, tool scoping. Session memory is handled by LangGraph in-memory checkpointer (InMemorySaver), not AgentCore Memory.
+Agent layer: LangGraph, AgentCore Gateway (MCP → unified_tools Lambda), Bedrock chat. **Skills** are injected into the graph prompts only (quick reference + full `SKILL.md` playbooks)—no separate router LLM call. All MCP tools stay available; the planner / tool-selection steps choose what to run. Session memory uses LangGraph’s checkpointer (in-memory by default; optional SQLite on disk for local dev).
 
 ## Layout
 
-- **src/main.py** – Entrypoint (BedrockAgentCoreApp); builds graph, loads Gateway tools, scopes by domain, invokes with in-memory checkpointer.
-- **src/graph/** – LangGraph state, nodes (planner, tool_selection, execute, evaluate, loop_controller, generate_response), build.
-- **src/scoping/** – Cost / Logs / Audit domains; `filter_tools_by_domain()`, `infer_domain_from_message()`.
-- **src/mcp_client/** – MCP client to AgentCore Gateway URL (no direct AWS APIs).
-- **src/model/** – ChatBedrock (Bedrock inference).
+- **skills/** – Agent Skills packages (`*/SKILL.md`): YAML frontmatter (`id`, `description`, `tools` allowlist, `routing_body_chars`) + playbook markdown.
+- **src/skills/** – Load skills, build **prompt injection** (discovery + playbooks); **no tool filtering** (full MCP surface; YAML `tools` lists are hints).
+- **src/main.py** – Local laptop: Starlette + uvicorn; AgentCore container: `BedrockAgentCoreApp` when `DOCKER_CONTAINER=1` or `CLOUD_AGENT_AGENTCORE=1`.
+- **src/runtime_invoke.py** – Invoke loop; calls skill router; builds graph with `skill_context` injected into prompts.
+- **src/local_http.py** – `POST /invoke` (SSE), `GET /health`.
+- **src/graph/** – LangGraph state, nodes, build.
+- **src/mcp_client/** – MCP client to Gateway URL.
+- **src/model/** – ChatBedrock.
 
-## Run
+## Skills in the graph
 
-**GATEWAY_MCP_URL** is optional; it defaults to the project's Gateway MCP endpoint. Set it only to override (e.g. a different gateway or region).
+Every `SKILL.md` under `skills/` is loaded: a **quick reference** (id, name, description) plus the **full playbook** is prepended to planner / tool selection / evaluate / final-answer prompts. There is **no** extra Bedrock call before the graph.
 
-**Multi-turn conversation memory** is provided by LangGraph’s in-memory checkpointer (InMemorySaver). Session state lives in the runtime process only; use the same **session_id** (or **sessionId**) in the payload to keep context for a conversation.
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SKILLS_DIR` | *(agent root)*`/skills` | Override skills folder |
 
-### Run the chat UI (Streamlit)
+## Run locally (laptop)
 
-Streamlit calls the AgentCore Runtime directly (no streaming server). From **repo root**, with AWS credentials configured (e.g. `aws configure`):
+AWS credentials (`aws configure` or SSO) are used for **Bedrock** (chat) and **Gateway → Lambda**.
 
-```bash
-cd streamlit-ui
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Ensure `.bedrock_agentcore.yaml` is at repo root (or set `AGENT_CONFIG_PATH`). Same chat = same session; new chat = new session (in-memory on the runtime).
-
-### Run agent entrypoint directly
+1. Copy **`agent/.env.example`** → **`agent/.env`** and set at least **`AWS_REGION`** (same region as in the Bedrock console). Variables are loaded automatically via **`python-dotenv`** when the agent starts (see `runtime_invoke.py`).
+2. In **AWS Console → Amazon Bedrock → Model access**, enable **serverless** access for your **Claude** chat model (used for the graph and for skill routing).
+3. Run:
 
 ```bash
 cd agent
 pip install -e .
-PYTHONPATH=src python src/main.py
+set PYTHONPATH=src
+python src/main.py
 ```
 
-Or deploy to AgentCore Runtime using `.bedrock_agentcore.yaml` (point entrypoint and source_path to this agent).
+Defaults: **http://127.0.0.1:8080/invoke**. In **`ui/.env.local`**: `AGENTCORE_RUNTIME_INVOKE_URL=http://127.0.0.1:8080/invoke`
 
-## Session memory (in-memory checkpointer)
+Optional: **`LANGGRAPH_CHECKPOINT_SQLITE`**, **`GATEWAY_MCP_URL`**.
 
-- The agent uses a **single shared** LangGraph **InMemorySaver** so that the same **session_id** loads prior conversation state (multi-turn memory).
-- Each **session_id** (or **sessionId**) in the payload is used as the LangGraph **thread_id**; the same ID keeps conversation context for that session. New session = new ID = separate conversation.
-- Memory is process-scoped: it works when the same runtime process serves both turns (e.g. long-lived container). On Lambda, session memory is best-effort when the same container is reused; for durable cross-invocation memory, use a persistent checkpointer (e.g. DynamoDB).
+To run **BedrockAgentCoreApp** on the laptop instead, set `CLOUD_AGENT_AGENTCORE=1` before `python src/main.py`.
 
-## Payload
+## Run the chat UI (`ui/`)
 
-- **prompt** (required): User message.
-- **scope** (optional): `"cost"` | `"logs"` | `"audit"` | `"all"`. Inferred from prompt if omitted.
-- **session_id** or **sessionId** (optional): Conversation thread; same ID keeps multi-turn context (in-memory on the runtime).
+Postgres + `AUTH_SECRET` + `AGENTCORE_RUNTIME_INVOKE_URL`. Skill routing runs **only in the Python agent**; the UI does not pick skills.
+
+## Deploy to AgentCore Runtime
+
+Use `.bedrock_agentcore.yaml`. Ensure the container image includes the **`skills/`** directory next to **`src/`** (same layout as local). The runtime role needs **`bedrock:InvokeModel`** on your chat model.
+
+## Payload (HTTP POST `/invoke`)
+
+- **prompt** (required)
+- **session_id** or **sessionId** (optional): LangGraph **thread_id** for multi-turn
+
+## Session memory
+
+In-memory per process, or durable with **`LANGGRAPH_CHECKPOINT_SQLITE`** on one machine.

@@ -2,255 +2,61 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Phase 2 Agent: LangGraph (Plan → Tool Selection → Execute → Evaluate → Iterate),
-AgentCore Gateway (all tool calls), Bedrock inference, tool scoping.
+Cloud Intelligence agent entry.
 
-Short-term memory: thread-scoped checkpoints. A single shared checkpointer is used
-so that the same thread_id (session_id) loads prior conversation state within this process.
-See: https://langchain-ai.github.io/langgraph/how-tos/persistence/
+- Default (local laptop): run ``python src/main.py`` → Starlette + uvicorn on PORT (8080).
+- AgentCore deploy: set CLOUD_AGENT_AGENTCORE=1 and use BedrockAgentCoreApp (same entry file).
 """
 
 import logging
 import os
 import sys
-import uuid
+
+from bedrock_agentcore import BedrockAgentCoreApp
+
+from runtime_invoke import stream_agent_events
 
 logger = logging.getLogger(__name__)
 
-
-def _configure_runtime_logging() -> None:
-    """Ensure logs go to stdout so CloudWatch captures them in the container."""
-    if os.environ.get("DOCKER_CONTAINER") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
-        root = logging.getLogger()
-        if not root.handlers:
-            h = logging.StreamHandler(sys.stdout)
-            h.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-            root.addHandler(h)
-            root.setLevel(logging.INFO)
-
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import InMemorySaver
-from bedrock_agentcore import BedrockAgentCoreApp
-
-from graph.build import build_graph
-from mcp_client.client import get_streamable_http_mcp_client
-from model.load import load_model
-from scoping.domains import filter_tools_by_domain, infer_domain_from_message
-from tools.ask_user import get_ask_user_tool
-from tools.visualization import (
-    build_auto_viz_from_conversation,
-    build_auto_viz_from_results,
-    get_visualization_tool,
-)
-
-_configure_runtime_logging()
 app = BedrockAgentCoreApp()
-llm = load_model()
-
-# Single checkpointer shared by all requests so thread_id (session_id) can load prior state.
-# Required for multi-turn memory: same process must reuse this instance (Lambda: best-effort per container).
-_checkpointer = InMemorySaver()
-
-
-def _progress_message(prev: dict | None, curr: dict) -> str | None:
-    """Infer which graph node just ran from state diff; return human-readable progress message."""
-    if prev is None:
-        return "Starting..."
-    prev_plan = prev.get("plan")
-    curr_plan = curr.get("plan")
-    if curr_plan is not None and curr_plan != prev_plan:
-        return "Planning next step..."
-    prev_sel = prev.get("selected_tools") or []
-    curr_sel = curr.get("selected_tools") or []
-    if curr_sel != prev_sel and curr_sel:
-        names = [s.get("name") for s in curr_sel if s.get("name")]
-        return f"Running tools: {', '.join(names)}..." if names else "Selecting tools..."
-    prev_results = prev.get("results") or []
-    curr_results = curr.get("results") or []
-    if curr_results != prev_results and curr_results:
-        names = [r.get("name", "?") for r in curr_results]
-        return f"Querying {', '.join(names)}..."
-    prev_eval = prev.get("evaluation")
-    curr_eval = curr.get("evaluation")
-    if curr_eval is not None and curr_eval != prev_eval:
-        return "Evaluating results..."
-    prev_msgs = prev.get("messages") or []
-    curr_msgs = curr.get("messages") or []
-    if len(curr_msgs) > len(prev_msgs) and curr_msgs:
-        last_msg = curr_msgs[-1]
-        if getattr(last_msg, "type", "") == "ai" or type(last_msg).__name__ == "AIMessage":
-            return "Formatting response..."
-    return None
-
-
-def _message_content(m: object) -> str:
-    """Get string content from a message (AIMessage or dict from serialized state)."""
-    if m is None:
-        return ""
-    if isinstance(m, dict):
-        content = m.get("content") or m.get("text")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return " ".join(
-                (str(block.get("text", block)) if isinstance(block, dict) else str(block))
-                for block in content
-            )
-        return str(content) if content is not None else ""
-    part = getattr(m, "content", None)
-    if isinstance(part, str):
-        return part
-    if isinstance(part, list):
-        return " ".join(
-            (str(b.get("text", b)) if isinstance(b, dict) else str(b)) for b in part
-        )
-    return str(part) if part is not None else ""
-
-
-def _is_ai_message(m: object) -> bool:
-    """True if message is from the assistant (AIMessage or dict with type 'ai')."""
-    if isinstance(m, dict):
-        return (m.get("type") or m.get("type_")) == "ai"
-    return getattr(m, "type", "") == "ai" or type(m).__name__ == "AIMessage"
-
-
-def _extract_last_content(result: dict) -> str:
-    """Extract final assistant text from graph result (full state when stream_mode='values')."""
-    out_messages = result.get("messages", []) or []
-    last_content = ""
-    for m in reversed(out_messages):
-        if _is_ai_message(m):
-            last_content = _message_content(m)
-            if last_content.strip():
-                break
-    if not last_content.strip() and out_messages:
-        last_content = _message_content(out_messages[-1])
-    return (last_content or "").strip()
 
 
 @app.entrypoint
 async def invoke(payload: dict):
-    """
-    Payload: { "prompt": "<user input>", "scope": "cost"|"logs"|"audit"|"discovery"|"all" (optional),
-              "session_id" or "sessionId" (optional; used as thread_id for checkpointer) }
-    Uses a shared checkpointer and thread_id for short-term memory; same session_id
-    loads prior conversation in this process. Streams progress then final
-    { "result", "messages", "clarification_needed" } as SSE.
-    """
-    prompt = payload.get("prompt", "What can you help me with?")
-    scope = payload.get("scope") or infer_domain_from_message(prompt)
-    session_id = (
-        payload.get("session_id")
-        or payload.get("sessionId")
-        or os.environ.get("AGENTCORE_SESSION_ID")
-        or str(uuid.uuid4())
-    )
+    """AgentCore HTTP runtime: stream same dicts as local server."""
+    async for event in stream_agent_events(payload):
+        yield event
 
-    logger.info("invoke start session_id=%s scope=%s prompt_len=%d", session_id, scope, len(prompt or ""))
 
-    try:
-        mcp_client = get_streamable_http_mcp_client()
-        all_tools = await mcp_client.get_tools()
-    except Exception as e:
-        logger.exception("get_tools failed session_id=%s error=%s", session_id, e)
-        print(f"[AGENT] get_tools failed session_id={session_id} error={e}", flush=True)
-        raise
-    tool_names = [getattr(t, "name", "?") for t in all_tools]
-    logger.info("get_tools ok session_id=%s all_count=%d names=%s", session_id, len(all_tools), tool_names[:20])
-    print(f"[AGENT] get_tools ok all_count={len(all_tools)} scope={scope} names={tool_names[:15]}", flush=True)
-    scoped_tools = filter_tools_by_domain(all_tools, scope)
-    scoped_names = [getattr(t, "name", "?") for t in scoped_tools]
-    logger.info("scoped_tools scope=%s count=%d names=%s", scope, len(scoped_tools), scoped_names[:20])
-    print(f"[AGENT] scoped_tools scope={scope} count={len(scoped_tools)} names={scoped_names[:15]}", flush=True)
-    if len(scoped_tools) == 0 and scope == "cost":
-        print("[AGENT] WARNING: no cost tools after scope filter; cost tools may be missing from Gateway", flush=True)
-    scoped_tools = [get_ask_user_tool(), get_visualization_tool()] + list(scoped_tools)
+def _run_local_http() -> None:
+    import uvicorn
 
-    input_state = {
-        "messages": [HumanMessage(content=prompt)],
-        "scoped_tools": [],
-        "results": [],
-        "iteration": 0,
-    }
+    from local_http import app as http_app
 
-    graph = build_graph(
-        llm,
-        max_iterations=20,
-        checkpointer=_checkpointer,
-        scoped_tools=scoped_tools,
-    )
-    config = {"configurable": {"thread_id": session_id}}
-    result = None
-    previous_state = None
-    captured_answer = ""
-    try:
-        async for state in graph.astream(
-            input_state, config=config, stream_mode="values"
-        ):
-            result = state
-            msg = _progress_message(previous_state, state)
-            if msg == "Formatting response...":
-                captured_answer = _extract_last_content(state)
-            previous_state = state
-            yield {"stage": "progress", "message": msg or "Working..."}
-    except Exception as e:
-        logger.exception("invoke stream failed session_id=%s error=%s", session_id, e)
-        raise
-
-    last_content = (_extract_last_content(result or {}) or "").strip()
-    if not last_content:
-        last_content = captured_answer.strip()
-    if not last_content:
-        results = (result or {}).get("results") or []
-        if results:
-            parts = []
-            for r in results:
-                name = r.get("name", "?")
-                if "error" in r:
-                    parts.append(f"- **{name}**: Error: {r['error']}")
-                else:
-                    out = r.get("output", "")
-                    parts.append(f"- **{name}**: {str(out)[:2000]}{'...' if len(str(out)) > 2000 else ''}")
-            last_content = "Here are the tool results:\n\n" + "\n\n".join(parts)
-    if not last_content:
-        last_content = (
-            "No response generated. The agent completed but returned no text. "
-            "You may want to retry or check model/credentials."
-        )
-    # Charts must reach the client: append from results or ToolMessages if missing (state.results can be empty after merge).
-    if last_content and "data:image/png;base64" not in last_content:
-        try:
-            viz_md = build_auto_viz_from_results(
-                (result or {}).get("results") or [], user_query=prompt
-            )
-            if not viz_md:
-                viz_md = build_auto_viz_from_conversation(
-                    (result or {}).get("messages") or [], user_query=prompt
-                )
-            if viz_md:
-                last_content = f"{last_content.rstrip()}\n\n{viz_md}"
-                logger.info("invoke: appended chart markdown chars=%d", len(viz_md))
-        except Exception:
-            logger.exception("invoke: chart append failed")
-
-    clarification_needed = any(
-        isinstance(r, dict) and (r.get("name") or "").strip() == "ask_user"
-        for r in (result or {}).get("results") or []
-    )
-    has_chart = "data:image/png;base64" in (last_content or "")
-    logger.info(
-        "invoke done session_id=%s result_len=%d clarification_needed=%s has_png_chart=%s",
-        session_id,
-        len(last_content or ""),
-        clarification_needed,
-        has_chart,
-    )
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8080"))
+    log_level = os.environ.get("UVICORN_LOG_LEVEL", "info")
+    logger.info("Starting local agent HTTP on http://%s:%s (POST /invoke)", host, port)
     print(
-        f"[AGENT] invoke done result_len={len(last_content or '')} has_png_chart={has_chart}",
+        f"[AGENT] Local HTTP  http://{host}:{port}/invoke  "
+        f"Set ui AGENTCORE_RUNTIME_INVOKE_URL to this URL",
         flush=True,
     )
-    yield {"result": last_content, "messages": [], "clarification_needed": clarification_needed}
+    uvicorn.run(http_app, host=host, port=port, log_level=log_level)
 
 
 if __name__ == "__main__":
-    app.run()
+    in_container = os.environ.get("DOCKER_CONTAINER", "").lower() in ("1", "true", "yes")
+    force_agentcore = os.environ.get("CLOUD_AGENT_AGENTCORE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # AgentCore Dockerfiles set DOCKER_CONTAINER=1 and run ``python -m src.main`` → Bedrock SDK server.
+    if in_container or force_agentcore:
+        app.run()
+    else:
+        src_dir = os.path.dirname(os.path.abspath(__file__))
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        _run_local_http()
